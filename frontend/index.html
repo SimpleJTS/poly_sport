@@ -1,0 +1,1199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polymarket 尾盘交易策略</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0a0e14;
+            --bg-secondary: #131920;
+            --bg-tertiary: #1a2029;
+            --bg-hover: #232b36;
+            --border-color: #2d3748;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+            --accent-green: #00ff88;
+            --accent-green-dim: #00cc6a;
+            --accent-red: #ff4757;
+            --accent-red-dim: #cc3a47;
+            --accent-blue: #58a6ff;
+            --accent-yellow: #ffd93d;
+            --accent-purple: #a78bfa;
+            --shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+            --radius: 8px;
+            --radius-lg: 12px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        .app {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        /* Header */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 32px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .logo-icon {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, var(--accent-green) 0%, var(--accent-blue) 100%);
+            border-radius: var(--radius);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+        }
+
+        .logo-text h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-green) 0%, var(--accent-blue) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .logo-text span {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 12px;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: var(--radius);
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-family: inherit;
+        }
+
+        .btn-primary {
+            background: var(--accent-green);
+            color: var(--bg-primary);
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-green-dim);
+            transform: translateY(-1px);
+        }
+
+        .btn-danger {
+            background: var(--accent-red);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: var(--accent-red-dim);
+        }
+
+        .btn-secondary {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-secondary:hover {
+            background: var(--bg-hover);
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 0.75rem;
+        }
+
+        /* Status Bar */
+        .status-bar {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 32px;
+        }
+
+        .status-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 20px;
+            transition: all 0.2s ease;
+        }
+
+        .status-card:hover {
+            border-color: var(--accent-green);
+            transform: translateY(-2px);
+        }
+
+        .status-card .label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .status-card .value {
+            font-size: 1.5rem;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .status-card .value.positive { color: var(--accent-green); }
+        .status-card .value.negative { color: var(--accent-red); }
+        .status-card .value.running { color: var(--accent-green); }
+        .status-card .value.stopped { color: var(--text-muted); }
+
+        /* Main Grid */
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 380px;
+            gap: 24px;
+        }
+
+        @media (max-width: 1024px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Card */
+        .card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .card-title {
+            font-size: 1rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card-body {
+            padding: 20px;
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .tab {
+            padding: 12px 20px;
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+            font-family: inherit;
+        }
+
+        .tab:hover {
+            color: var(--text-primary);
+            background: var(--bg-hover);
+        }
+
+        .tab.active {
+            color: var(--accent-green);
+        }
+
+        .tab.active::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: var(--accent-green);
+        }
+
+        /* Form */
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 10px 14px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            color: var(--text-primary);
+            font-size: 0.875rem;
+            font-family: 'JetBrains Mono', monospace;
+            transition: all 0.2s ease;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--accent-green);
+            box-shadow: 0 0 0 3px rgba(0, 255, 136, 0.1);
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .form-hint {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        /* Switch */
+        .switch-wrapper {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .switch-wrapper:last-child {
+            border-bottom: none;
+        }
+
+        .switch-label {
+            font-size: 0.875rem;
+        }
+
+        .switch {
+            position: relative;
+            width: 48px;
+            height: 26px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .switch-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 26px;
+            transition: all 0.2s ease;
+        }
+
+        .switch-slider::before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 2px;
+            bottom: 2px;
+            background: var(--text-secondary);
+            border-radius: 50%;
+            transition: all 0.2s ease;
+        }
+
+        .switch input:checked + .switch-slider {
+            background: var(--accent-green);
+            border-color: var(--accent-green);
+        }
+
+        .switch input:checked + .switch-slider::before {
+            transform: translateX(22px);
+            background: var(--bg-primary);
+        }
+
+        /* Market Table */
+        .market-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .market-table th {
+            text-align: left;
+            padding: 12px 16px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-tertiary);
+        }
+
+        .market-table td {
+            padding: 12px 16px;
+            font-size: 0.875rem;
+            border-bottom: 1px solid var(--border-color);
+            vertical-align: middle;
+        }
+
+        .market-table tr:hover {
+            background: var(--bg-hover);
+        }
+
+        .market-question {
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .price-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .price-badge.high {
+            background: rgba(0, 255, 136, 0.15);
+            color: var(--accent-green);
+        }
+
+        .price-badge.medium {
+            background: rgba(255, 217, 61, 0.15);
+            color: var(--accent-yellow);
+        }
+
+        .price-badge.low {
+            background: rgba(255, 71, 87, 0.15);
+            color: var(--accent-red);
+        }
+
+        /* Position Card */
+        .position-item {
+            background: var(--bg-tertiary);
+            border-radius: var(--radius);
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+
+        .position-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .position-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+
+        .position-title {
+            font-size: 0.875rem;
+            font-weight: 500;
+            flex: 1;
+            margin-right: 12px;
+        }
+
+        .position-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+        }
+
+        .position-stat {
+            text-align: center;
+        }
+
+        .position-stat .label {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .position-stat .value {
+            font-size: 0.875rem;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-muted);
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+
+        /* Log */
+        .log-container {
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+        }
+
+        .log-item {
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            gap: 12px;
+        }
+
+        .log-time {
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+
+        .log-message {
+            color: var(--text-secondary);
+        }
+
+        .log-item.info .log-message { color: var(--accent-blue); }
+        .log-item.success .log-message { color: var(--accent-green); }
+        .log-item.warning .log-message { color: var(--accent-yellow); }
+        .log-item.error .log-message { color: var(--accent-red); }
+
+        /* Animations */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .pulse {
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-tertiary);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-muted);
+        }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            top: 24px;
+            right: 24px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            padding: 12px 20px;
+            box-shadow: var(--shadow);
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            animation: slideIn 0.3s ease;
+        }
+
+        .toast.success { border-color: var(--accent-green); }
+        .toast.error { border-color: var(--accent-red); }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="app" class="app">
+        <!-- Toast -->
+        <div v-if="toast.show" :class="['toast', toast.type]">
+            {{ toast.message }}
+        </div>
+
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <div class="logo-icon">📈</div>
+                <div class="logo-text">
+                    <h1>Polymarket 尾盘交易</h1>
+                    <span>Sport Market Trading Bot</span>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button v-if="!status.is_running" class="btn btn-primary" @click="startTrading">
+                    ▶ 启动策略
+                </button>
+                <button v-else class="btn btn-danger" @click="stopTrading">
+                    ⏹ 停止策略
+                </button>
+                <button class="btn btn-secondary" @click="refreshData">
+                    🔄 刷新
+                </button>
+            </div>
+        </header>
+
+        <!-- Status Bar -->
+        <div class="status-bar">
+            <div class="status-card">
+                <div class="label">系统状态</div>
+                <div :class="['value', status.is_running ? 'running' : 'stopped']">
+                    {{ status.is_running ? '运行中' : '已停止' }}
+                    <span v-if="status.is_running" class="pulse">●</span>
+                </div>
+            </div>
+            <div class="status-card">
+                <div class="label">可用余额</div>
+                <div class="value">${{ balance.available.toFixed(2) }}</div>
+            </div>
+            <div class="status-card">
+                <div class="label">持仓数量</div>
+                <div class="value">{{ status.open_positions }}</div>
+            </div>
+            <div class="status-card">
+                <div class="label">今日盈亏</div>
+                <div :class="['value', status.daily_pnl >= 0 ? 'positive' : 'negative']">
+                    {{ status.daily_pnl >= 0 ? '+' : '' }}${{ status.daily_pnl.toFixed(2) }}
+                </div>
+            </div>
+            <div class="status-card">
+                <div class="label">监控市场</div>
+                <div class="value">{{ status.monitored_markets }}</div>
+            </div>
+        </div>
+
+        <!-- Main Grid -->
+        <div class="main-grid">
+            <!-- Left Column -->
+            <div class="left-column">
+                <!-- Markets Card -->
+                <div class="card" style="margin-bottom: 24px;">
+                    <div class="card-header">
+                        <span class="card-title">🏆 Sport市场</span>
+                        <button class="btn btn-secondary btn-sm" @click="scanMarkets">
+                            扫描市场
+                        </button>
+                    </div>
+                    <div v-if="markets.length > 0">
+                        <table class="market-table">
+                            <thead>
+                                <tr>
+                                    <th>市场</th>
+                                    <th>价格</th>
+                                    <th>结算时间</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="market in markets" :key="market.id">
+                                    <td class="market-question" :title="market.question">
+                                        {{ market.question }}
+                                    </td>
+                                    <td>
+                                        <span :class="['price-badge', getPriceClass(market.yes_price * 100)]">
+                                            {{ (market.yes_price * 100).toFixed(1) }}¢
+                                        </span>
+                                    </td>
+                                    <td>{{ formatEndDate(market.end_date) }}</td>
+                                    <td>
+                                        <button class="btn btn-primary btn-sm" 
+                                                @click="buyMarket(market)"
+                                                :disabled="!status.is_running">
+                                            买入
+                                        </button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div v-else class="empty-state">
+                        <div class="empty-state-icon">🔍</div>
+                        <div>暂无符合条件的市场</div>
+                    </div>
+                </div>
+
+                <!-- Positions Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">📊 当前持仓</span>
+                    </div>
+                    <div class="card-body">
+                        <div v-if="positions.length > 0">
+                            <div v-for="pos in positions" :key="pos.id" class="position-item">
+                                <div class="position-header">
+                                    <div class="position-title">{{ pos.market_question }}</div>
+                                    <button class="btn btn-danger btn-sm" @click="sellPosition(pos.market_id)">
+                                        卖出
+                                    </button>
+                                </div>
+                                <div class="position-stats">
+                                    <div class="position-stat">
+                                        <div class="label">成本价</div>
+                                        <div class="value">{{ pos.avg_price.toFixed(1) }}¢</div>
+                                    </div>
+                                    <div class="position-stat">
+                                        <div class="label">当前价</div>
+                                        <div class="value">{{ pos.current_price.toFixed(1) }}¢</div>
+                                    </div>
+                                    <div class="position-stat">
+                                        <div class="label">盈亏</div>
+                                        <div :class="['value', pos.unrealized_pnl >= 0 ? 'positive' : 'negative']">
+                                            {{ pos.unrealized_pnl >= 0 ? '+' : '' }}${{ pos.unrealized_pnl.toFixed(2) }}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div v-else class="empty-state">
+                            <div class="empty-state-icon">📭</div>
+                            <div>暂无持仓</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column - Config -->
+            <div class="right-column">
+                <div class="card">
+                    <div class="tabs">
+                        <button :class="['tab', activeTab === 'trading' && 'active']" 
+                                @click="activeTab = 'trading'">
+                            策略配置
+                        </button>
+                        <button :class="['tab', activeTab === 'telegram' && 'active']" 
+                                @click="activeTab = 'telegram'">
+                            Telegram
+                        </button>
+                    </div>
+
+                    <!-- Trading Config -->
+                    <div v-show="activeTab === 'trading'" class="card-body">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">入场价格</label>
+                                <input type="number" class="form-input" 
+                                       v-model.number="tradingConfig.entry_price"
+                                       min="0" max="100" step="1">
+                                <div class="form-hint">价格≥此值时买入 (0-100)</div>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">止损价格</label>
+                                <input type="number" class="form-input" 
+                                       v-model.number="tradingConfig.stop_loss_price"
+                                       min="0" max="100" step="1">
+                                <div class="form-hint">价格≤此值时卖出</div>
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">单次金额 ($)</label>
+                                <input type="number" class="form-input" 
+                                       v-model.number="tradingConfig.order_amount"
+                                       min="1" step="1">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">最大持仓 ($)</label>
+                                <input type="number" class="form-input" 
+                                       v-model.number="tradingConfig.max_position_amount"
+                                       min="1" step="10">
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">时间过滤 (小时)</label>
+                                <input type="number" class="form-input" 
+                                       v-model.number="tradingConfig.time_filter_hours"
+                                       min="0.1" step="0.1">
+                                <div class="form-hint">结算前X小时内的市场</div>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">扫描间隔 (秒)</label>
+                                <input type="number" class="form-input" 
+                                       v-model.number="tradingConfig.scan_interval"
+                                       min="5" step="5">
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">每日亏损限制 ($)</label>
+                                <input type="number" class="form-input" 
+                                       v-model.number="tradingConfig.max_daily_loss"
+                                       min="0" step="10">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">最大持仓数</label>
+                                <input type="number" class="form-input" 
+                                       v-model.number="tradingConfig.max_open_positions"
+                                       min="1" step="1">
+                            </div>
+                        </div>
+
+                        <div class="switch-wrapper">
+                            <span class="switch-label">启用自动交易</span>
+                            <label class="switch">
+                                <input type="checkbox" v-model="tradingConfig.auto_trading_enabled">
+                                <span class="switch-slider"></span>
+                            </label>
+                        </div>
+
+                        <button class="btn btn-primary" style="width: 100%; margin-top: 16px;" 
+                                @click="saveTradingConfig">
+                            保存配置
+                        </button>
+                    </div>
+
+                    <!-- Telegram Config -->
+                    <div v-show="activeTab === 'telegram'" class="card-body">
+                        <div class="switch-wrapper">
+                            <span class="switch-label">启用Telegram通知</span>
+                            <label class="switch">
+                                <input type="checkbox" v-model="telegramConfig.enabled">
+                                <span class="switch-slider"></span>
+                            </label>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Bot Token</label>
+                            <input type="password" class="form-input" 
+                                   v-model="telegramConfig.bot_token"
+                                   placeholder="输入Bot Token">
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Chat ID</label>
+                            <input type="text" class="form-input" 
+                                   v-model="telegramConfig.chat_id"
+                                   placeholder="输入Chat ID">
+                        </div>
+
+                        <div style="display: flex; gap: 12px; margin-top: 16px;">
+                            <button class="btn btn-secondary" style="flex: 1;" @click="testTelegram">
+                                测试连接
+                            </button>
+                            <button class="btn btn-primary" style="flex: 1;" @click="saveTelegramConfig">
+                                保存配置
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Log Card -->
+                <div class="card" style="margin-top: 24px;">
+                    <div class="card-header">
+                        <span class="card-title">📝 操作日志</span>
+                    </div>
+                    <div class="log-container">
+                        <div v-for="(log, i) in logs" :key="i" :class="['log-item', log.type]">
+                            <span class="log-time">{{ log.time }}</span>
+                            <span class="log-message">{{ log.message }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, reactive, onMounted } = Vue;
+
+        createApp({
+            setup() {
+                const API_BASE = '/api';
+
+                // State
+                const activeTab = ref('trading');
+                const status = reactive({
+                    is_running: false,
+                    auto_trading: false,
+                    monitored_markets: 0,
+                    open_positions: 0,
+                    daily_pnl: 0
+                });
+                const balance = reactive({
+                    available: 0,
+                    locked: 0,
+                    total: 0
+                });
+                const tradingConfig = reactive({
+                    entry_price: 90,
+                    stop_loss_price: 85,
+                    order_amount: 10,
+                    max_position_amount: 100,
+                    time_filter_hours: 1,
+                    scan_interval: 30,
+                    max_daily_loss: 50,
+                    max_open_positions: 5,
+                    auto_trading_enabled: false
+                });
+                const telegramConfig = reactive({
+                    enabled: false,
+                    bot_token: '',
+                    chat_id: ''
+                });
+                const markets = ref([]);
+                const positions = ref([]);
+                const logs = ref([]);
+                const toast = reactive({ show: false, message: '', type: 'success' });
+
+                // Methods
+                const showToast = (message, type = 'success') => {
+                    toast.message = message;
+                    toast.type = type;
+                    toast.show = true;
+                    setTimeout(() => toast.show = false, 3000);
+                };
+
+                const addLog = (message, type = 'info') => {
+                    const now = new Date();
+                    const time = now.toLocaleTimeString('zh-CN');
+                    logs.value.unshift({ time, message, type });
+                    if (logs.value.length > 50) logs.value.pop();
+                };
+
+                const fetchStatus = async () => {
+                    try {
+                        const res = await fetch(`${API_BASE}/status`);
+                        const data = await res.json();
+                        Object.assign(status, data);
+                    } catch (e) {
+                        console.error('获取状态失败:', e);
+                    }
+                };
+
+                const fetchBalance = async () => {
+                    try {
+                        const res = await fetch(`${API_BASE}/account/balance`);
+                        const data = await res.json();
+                        if (data.success) {
+                            Object.assign(balance, data.data);
+                        }
+                    } catch (e) {
+                        console.error('获取余额失败:', e);
+                    }
+                };
+
+                const fetchTradingConfig = async () => {
+                    try {
+                        const res = await fetch(`${API_BASE}/config/trading`);
+                        const data = await res.json();
+                        if (data.success) {
+                            Object.assign(tradingConfig, data.data);
+                        }
+                    } catch (e) {
+                        console.error('获取交易配置失败:', e);
+                    }
+                };
+
+                const fetchTelegramConfig = async () => {
+                    try {
+                        const res = await fetch(`${API_BASE}/config/telegram`);
+                        const data = await res.json();
+                        if (data.success) {
+                            Object.assign(telegramConfig, {
+                                enabled: data.data.enabled,
+                                bot_token: '',
+                                chat_id: data.data.chat_id
+                            });
+                        }
+                    } catch (e) {
+                        console.error('获取TG配置失败:', e);
+                    }
+                };
+
+                const fetchPositions = async () => {
+                    try {
+                        const res = await fetch(`${API_BASE}/account/positions`);
+                        const data = await res.json();
+                        if (data.success) {
+                            positions.value = data.data.positions;
+                        }
+                    } catch (e) {
+                        console.error('获取持仓失败:', e);
+                    }
+                };
+
+                const scanMarkets = async () => {
+                    try {
+                        addLog('正在扫描Sport市场...', 'info');
+                        const res = await fetch(`${API_BASE}/markets/sport?hours=${tradingConfig.time_filter_hours}`);
+                        const data = await res.json();
+                        if (data.success) {
+                            markets.value = data.data.markets;
+                            addLog(`扫描完成，发现 ${data.data.count} 个市场`, 'success');
+                        }
+                    } catch (e) {
+                        addLog('扫描市场失败', 'error');
+                    }
+                };
+
+                const startTrading = async () => {
+                    try {
+                        const res = await fetch(`${API_BASE}/start`, { method: 'POST' });
+                        const data = await res.json();
+                        if (data.success) {
+                            showToast('交易策略已启动');
+                            addLog('交易策略已启动', 'success');
+                            await fetchStatus();
+                        }
+                    } catch (e) {
+                        showToast('启动失败', 'error');
+                    }
+                };
+
+                const stopTrading = async () => {
+                    try {
+                        const res = await fetch(`${API_BASE}/stop`, { method: 'POST' });
+                        const data = await res.json();
+                        if (data.success) {
+                            showToast('交易策略已停止');
+                            addLog('交易策略已停止', 'warning');
+                            await fetchStatus();
+                        }
+                    } catch (e) {
+                        showToast('停止失败', 'error');
+                    }
+                };
+
+                const saveTradingConfig = async () => {
+                    try {
+                        const res = await fetch(`${API_BASE}/config/trading`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(tradingConfig)
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            showToast('配置已保存');
+                            addLog('交易配置已更新', 'success');
+                        }
+                    } catch (e) {
+                        showToast('保存失败', 'error');
+                    }
+                };
+
+                const saveTelegramConfig = async () => {
+                    try {
+                        const payload = {
+                            enabled: telegramConfig.enabled,
+                            chat_id: telegramConfig.chat_id
+                        };
+                        if (telegramConfig.bot_token) {
+                            payload.bot_token = telegramConfig.bot_token;
+                        }
+                        const res = await fetch(`${API_BASE}/config/telegram`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            showToast('Telegram配置已保存');
+                            addLog('Telegram配置已更新', 'success');
+                        }
+                    } catch (e) {
+                        showToast('保存失败', 'error');
+                    }
+                };
+
+                const testTelegram = async () => {
+                    try {
+                        addLog('正在测试Telegram连接...', 'info');
+                        const res = await fetch(`${API_BASE}/config/telegram/test`, { method: 'POST' });
+                        const data = await res.json();
+                        if (data.success) {
+                            showToast('测试消息已发送');
+                            addLog('Telegram测试成功', 'success');
+                        } else {
+                            showToast('测试失败: ' + data.message, 'error');
+                            addLog('Telegram测试失败', 'error');
+                        }
+                    } catch (e) {
+                        showToast('测试失败', 'error');
+                    }
+                };
+
+                const buyMarket = async (market) => {
+                    if (!confirm(`确认买入 "${market.question.substring(0, 50)}..." ?`)) return;
+                    try {
+                        const res = await fetch(`${API_BASE}/trade/buy?market_id=${market.id}&token_id=${market.token_id}&price=${market.yes_price * 100}&amount=${tradingConfig.order_amount}&market_question=${encodeURIComponent(market.question)}`, {
+                            method: 'POST'
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            showToast('买入订单已提交');
+                            addLog(`买入: ${market.question.substring(0, 30)}...`, 'success');
+                            await fetchPositions();
+                        } else {
+                            showToast('买入失败', 'error');
+                        }
+                    } catch (e) {
+                        showToast('买入失败', 'error');
+                    }
+                };
+
+                const sellPosition = async (marketId) => {
+                    if (!confirm('确认卖出此持仓?')) return;
+                    try {
+                        const res = await fetch(`${API_BASE}/trade/sell/${marketId}`, { method: 'POST' });
+                        const data = await res.json();
+                        if (data.success) {
+                            showToast('卖出订单已提交');
+                            addLog('卖出成功', 'success');
+                            await fetchPositions();
+                        } else {
+                            showToast('卖出失败', 'error');
+                        }
+                    } catch (e) {
+                        showToast('卖出失败', 'error');
+                    }
+                };
+
+                const refreshData = async () => {
+                    await Promise.all([
+                        fetchStatus(),
+                        fetchBalance(),
+                        fetchPositions()
+                    ]);
+                    showToast('数据已刷新');
+                };
+
+                const getPriceClass = (price) => {
+                    if (price >= 90) return 'high';
+                    if (price >= 70) return 'medium';
+                    return 'low';
+                };
+
+                const formatEndDate = (dateStr) => {
+                    if (!dateStr) return '-';
+                    const date = new Date(dateStr);
+                    const now = new Date();
+                    const diff = date - now;
+                    const hours = Math.floor(diff / (1000 * 60 * 60));
+                    const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+                    if (hours < 0) return '已结束';
+                    if (hours < 1) return `${mins}分钟`;
+                    return `${hours}小时${mins}分`;
+                };
+
+                // Lifecycle
+                onMounted(async () => {
+                    addLog('系统初始化...', 'info');
+                    await Promise.all([
+                        fetchStatus(),
+                        fetchBalance(),
+                        fetchTradingConfig(),
+                        fetchTelegramConfig(),
+                        fetchPositions()
+                    ]);
+                    addLog('系统就绪', 'success');
+
+                    // Auto refresh
+                    setInterval(fetchStatus, 10000);
+                    setInterval(fetchBalance, 30000);
+                    setInterval(fetchPositions, 15000);
+                });
+
+                return {
+                    activeTab,
+                    status,
+                    balance,
+                    tradingConfig,
+                    telegramConfig,
+                    markets,
+                    positions,
+                    logs,
+                    toast,
+                    startTrading,
+                    stopTrading,
+                    saveTradingConfig,
+                    saveTelegramConfig,
+                    testTelegram,
+                    scanMarkets,
+                    buyMarket,
+                    sellPosition,
+                    refreshData,
+                    getPriceClass,
+                    formatEndDate
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

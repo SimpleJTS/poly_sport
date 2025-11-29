@@ -1,0 +1,34 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env
+.venv
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and data (will be mounted as volumes)
+logs/
+data/
+
+# Documentation
+*.md
+!README.md
+
+# Test
+tests/
+pytest.ini
+.coverage
+htmlcov/
