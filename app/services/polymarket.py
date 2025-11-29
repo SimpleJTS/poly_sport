@@ -60,6 +60,7 @@ class PolymarketClient:
     async def _derive_api_credentials(self):
         """派生API凭证"""
         if not self._account:
+            logger.error("派生API凭证失败: 账户未初始化")
             return
         
         try:
@@ -67,21 +68,36 @@ class PolymarketClient:
             nonce = int(time.time() * 1000)
             timestamp = int(time.time())
             
-            # 签名消息
-            message = f"polymarket-clob-api-key:{nonce}"
+            # 签名消息 - 使用 Polymarket 官方格式
+            message = f"I want to create a new API key on Polymarket CLOB with nonce {nonce}"
             message_hash = encode_defunct(text=message)
             signed = self._account.sign_message(message_hash)
             
+            # 签名需要加上 0x 前缀
+            signature = "0x" + signed.signature.hex()
+            
+            request_body = {
+                "message": message,
+                "signature": signature,
+                "nonce": nonce,
+                "timestamp": timestamp
+            }
+            
+            logger.debug(f"派生API凭证请求参数:")
+            logger.debug(f"  钱包地址: {self._account.address}")
+            logger.debug(f"  消息: {message}")
+            logger.debug(f"  签名: {signature[:20]}...{signature[-10:]}")
+            logger.debug(f"  nonce: {nonce}")
+            logger.debug(f"  timestamp: {timestamp}")
+            
             # 注册API密钥
-            response = await self._http_client.post(
-                f"{self.CLOB_HOST}/auth/derive-api-key",
-                json={
-                    "message": message,
-                    "signature": signed.signature.hex(),
-                    "nonce": nonce,
-                    "timestamp": timestamp
-                }
-            )
+            url = f"{self.CLOB_HOST}/auth/derive-api-key"
+            logger.debug(f"  请求URL: {url}")
+            
+            response = await self._http_client.post(url, json=request_body)
+            
+            logger.debug(f"API凭证响应状态码: {response.status_code}")
+            logger.debug(f"API凭证响应内容: {response.text[:500] if response.text else '(空)'}")
             
             if response.status_code == 200:
                 data = response.json()
@@ -91,11 +107,18 @@ class PolymarketClient:
                     "api_passphrase": data.get("passphrase")
                 }
                 logger.info("API凭证获取成功")
+                logger.debug(f"  api_key: {self._api_creds['api_key'][:10]}..." if self._api_creds['api_key'] else "无")
             else:
-                logger.error(f"获取API凭证失败: {response.text}")
+                logger.error(f"获取API凭证失败:")
+                logger.error(f"  状态码: {response.status_code}")
+                logger.error(f"  响应: {response.text}")
+                logger.error(f"  请尝试使用以下curl命令手动测试:")
+                logger.error(f"  curl -X POST {url} -H 'Content-Type: application/json' -d '{json.dumps(request_body)}'")
                 
         except Exception as e:
+            import traceback
             logger.error(f"派生API凭证错误: {e}")
+            logger.error(f"详细错误: {traceback.format_exc()}")
     
     def _get_auth_headers(self, method: str, path: str, body: str = "") -> Dict[str, str]:
         """生成认证头"""
@@ -394,33 +417,68 @@ class PolymarketClient:
     # ============ 账户相关 ============
     
     async def get_balance(self) -> Balance:
-        """获取账户余额"""
+        """获取账户余额（代理钱包余额）"""
         if not self._account:
+            logger.error("获取余额失败: 账户未初始化")
             return Balance()
         
         try:
-            # 获取USDC余额
-            # Polymarket使用Polygon上的USDC
-            response = await self._http_client.get(
-                f"{self.CLOB_HOST}/balance",
-                params={"address": self._account.address}
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                available = float(data.get("available", 0))
-                locked = float(data.get("locked", 0))
-                return Balance(
-                    available=available,
-                    locked=locked,
-                    total=available + locked
+            # 方法1: 尝试使用认证接口获取代理钱包余额
+            if self._api_creds:
+                path = "/balance"
+                headers = self._get_auth_headers("GET", path)
+                
+                logger.debug(f"使用认证接口获取余额...")
+                logger.debug(f"  地址: {self._account.address}")
+                
+                response = await self._http_client.get(
+                    f"{self.CLOB_HOST}{path}",
+                    params={"address": self._account.address},
+                    headers=headers
                 )
+                
+                logger.debug(f"余额响应状态码: {response.status_code}")
+                logger.debug(f"余额响应内容: {response.text[:500] if response.text else '(空)'}")
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    available = float(data.get("available", 0))
+                    locked = float(data.get("locked", 0))
+                    logger.info(f"代理钱包余额: 可用={available}, 锁定={locked}")
+                    return Balance(
+                        available=available,
+                        locked=locked,
+                        total=available + locked
+                    )
+                else:
+                    logger.error(f"获取余额失败:")
+                    logger.error(f"  状态码: {response.status_code}")
+                    logger.error(f"  响应: {response.text}")
+            else:
+                logger.error("获取余额失败: API凭证未初始化")
+                logger.error("请先确保API凭证获取成功")
             
             return Balance()
             
         except Exception as e:
+            import traceback
             logger.error(f"获取余额失败: {e}")
+            logger.error(f"详细错误: {traceback.format_exc()}")
             return Balance()
+    
+    async def debug_api_status(self) -> Dict[str, Any]:
+        """获取API调试信息"""
+        status = {
+            "wallet_initialized": self._account is not None,
+            "wallet_address": self._account.address if self._account else None,
+            "api_creds_initialized": self._api_creds is not None,
+            "http_client_initialized": self._http_client is not None,
+        }
+        
+        if self._api_creds:
+            status["api_key_preview"] = self._api_creds.get("api_key", "")[:10] + "..." if self._api_creds.get("api_key") else None
+        
+        return status
     
     async def get_positions(self) -> List[Position]:
         """获取持仓"""

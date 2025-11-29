@@ -118,6 +118,28 @@ async def get_balance():
     )
 
 
+@router.get("/debug/api-status")
+async def get_api_debug_status():
+    """获取API调试状态"""
+    status = await polymarket_client.debug_api_status()
+    return ApiResponse(
+        success=True,
+        data=status
+    )
+
+
+@router.post("/debug/reinit-api")
+async def reinit_api():
+    """重新初始化API凭证"""
+    await polymarket_client.initialize()
+    status = await polymarket_client.debug_api_status()
+    return ApiResponse(
+        success=status.get("api_creds_initialized", False),
+        message="API凭证初始化" + ("成功" if status.get("api_creds_initialized") else "失败"),
+        data=status
+    )
+
+
 @router.get("/account/positions")
 async def get_positions():
     """获取当前持仓"""
