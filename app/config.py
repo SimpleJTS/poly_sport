@@ -65,7 +65,7 @@ class AppConfig(BaseSettings):
     """应用配置"""
     # 服务配置
     host: str = Field(default="0.0.0.0", description="服务监听地址")
-    port: int = Field(default=8080, description="服务端口")
+    port: int = Field(default=9000, description="服务端口")
     debug: bool = Field(default=False, description="调试模式")
     
     # 日志配置
