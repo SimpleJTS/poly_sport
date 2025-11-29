@@ -58,12 +58,12 @@ cp .env.example .env
 
 4. **启动服务**
 ```bash
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --host 0.0.0.0 --port 9000
 ```
 
 5. **访问界面**
 ```
-http://localhost:8000
+http://localhost:9000
 ```
 
 ### Docker 运行
@@ -77,7 +77,7 @@ docker build -t polymarket-trader .
 ```bash
 docker run -d \
   --name polymarket-trader \
-  -p 8000:8000 \
+  -p 9000:9000 \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/logs:/app/logs \
   -e POLY_PRIVATE_KEY=your_private_key \
