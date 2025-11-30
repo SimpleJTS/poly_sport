@@ -217,13 +217,19 @@ class PolymarketClient:
         """
         try:
             # 使用 Gamma API 的 events 端点，通过 tag_slug 过滤 sport 事件
+            # 使用 end_date_min 过滤，order=endDate 按时间排序（最近的在前）
+            # 注意：end_date_min 往前推2小时，以包含正在进行的比赛（比赛通常持续1-2小时）
+            min_date = (datetime.utcnow() - timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            
             response = await self._http_client.get(
                 f"{self.GAMMA_HOST}/events",
                 params={
                     "closed": "false",
                     "active": "true",
-                    "tag_slug": "sports",  # 直接过滤 sports 标签
-                    "limit": 100
+                    "tag_slug": "sports",
+                    "limit": 200,  # 按时间排序后不需要太大的 limit
+                    "order": "endDate",  # 按结束时间排序，最近的在前
+                    "end_date_min": min_date  # 包含最近2小时内开始的比赛（正在进行中）
                 }
             )
             
@@ -238,6 +244,18 @@ class PolymarketClient:
             filter_threshold = now + timedelta(hours=hours_filter)
             
             logger.info(f"获取到 {len(events_data)} 个Sport事件")
+            logger.info(f"时间过滤: 当前时间={now.strftime('%Y-%m-%d %H:%M:%S')}, 阈值={filter_threshold.strftime('%Y-%m-%d %H:%M:%S')} (未来{hours_filter}小时)")
+            
+            # 统计被过滤的原因
+            stats = {
+                "total_markets": 0,
+                "closed": 0,
+                "no_token": 0,
+                "expired": 0,
+                "too_far": 0,
+                "no_end_date": 0,
+                "passed": 0
+            }
             
             for event in events_data:
                 # 获取事件中的所有市场
@@ -248,8 +266,11 @@ class PolymarketClient:
                 logger.debug(f"事件: {event_title}, 市场数: {len(event_markets)}, 标签: {event_tags}")
                 
                 for m in event_markets:
+                    stats["total_markets"] += 1
+                    
                     # 检查市场是否关闭
                     if m.get("closed", False):
+                        stats["closed"] += 1
                         continue
                     
                     # 解析结束时间
@@ -261,23 +282,72 @@ class PolymarketClient:
                         except Exception as e:
                             logger.debug(f"解析日期失败: {end_date_str}, 错误: {e}")
                     
-                    # 时间过滤：只保留即将结算的市场（在 hours_filter 小时内结束）
+                    # 时间过滤：保留即将结算或正在进行的市场
+                    # 注意：endDate 通常表示比赛开始/投注截止时间，不是市场关闭时间
+                    # 如果市场 closed=False，即使 endDate 已过，市场可能仍在进行中（live）
+                    
                     if end_date:
                         if end_date < now:
-                            # 已过期
-                            continue
-                        if end_date > filter_threshold:
+                            # endDate 已过，但市场未关闭，可能是正在进行的比赛
+                            # 允许最近 2 小时内开始的比赛（比赛通常持续1-2小时）
+                            hours_since_start = (now - end_date).total_seconds() / 3600
+                            if hours_since_start > 2:
+                                # 超过2小时，真正过期了
+                                stats["expired"] += 1
+                                continue
+                            else:
+                                # 可能正在进行中，保留
+                                logger.debug(f"市场可能正在进行: {m.get('question', '')[:50]}... 开始于 {hours_since_start:.1f}小时前")
+                        elif end_date > filter_threshold:
                             # 还没到尾盘时间
+                            stats["too_far"] += 1
+                            # 输出最近的几个市场结束时间，帮助诊断
+                            if stats["too_far"] <= 3:
+                                time_diff = end_date - now
+                                hours_until = time_diff.total_seconds() / 3600
+                                logger.debug(f"市场时间过滤: {m.get('question', '')[:50]}... 开始于 {end_date.strftime('%Y-%m-%d %H:%M')} ({hours_until:.1f}小时后)")
                             continue
+                    else:
+                        # 没有结束日期的市场也跳过（除非特别配置）
+                        stats["no_end_date"] += 1
+                        continue
                     
-                    # 获取 token 信息
-                    clob_token_ids = m.get("clobTokenIds", [])
-                    outcome_prices = m.get("outcomePrices", [])
-                    outcomes = m.get("outcomes", ["Yes", "No"])
+                    # 获取 token 信息 (API 返回的是 JSON 字符串，需要解析)
+                    clob_token_ids_raw = m.get("clobTokenIds", [])
+                    outcome_prices_raw = m.get("outcomePrices", [])
+                    outcomes_raw = m.get("outcomes", ["Yes", "No"])
+                    
+                    # 解析 JSON 字符串
+                    if isinstance(clob_token_ids_raw, str):
+                        try:
+                            clob_token_ids = json.loads(clob_token_ids_raw)
+                        except:
+                            clob_token_ids = []
+                    else:
+                        clob_token_ids = clob_token_ids_raw or []
+                    
+                    if isinstance(outcome_prices_raw, str):
+                        try:
+                            outcome_prices = json.loads(outcome_prices_raw)
+                        except:
+                            outcome_prices = []
+                    else:
+                        outcome_prices = outcome_prices_raw or []
+                    
+                    if isinstance(outcomes_raw, str):
+                        try:
+                            outcomes = json.loads(outcomes_raw)
+                        except:
+                            outcomes = ["Yes", "No"]
+                    else:
+                        outcomes = outcomes_raw or ["Yes", "No"]
                     
                     if not clob_token_ids or len(clob_token_ids) < 2:
+                        stats["no_token"] += 1
                         logger.debug(f"市场缺少 token 信息: {m.get('question', '')[:50]}")
                         continue
+                    
+                    stats["passed"] += 1
                     
                     # 解析价格
                     yes_price = 0.0
@@ -321,6 +391,15 @@ class PolymarketClient:
                     markets.append(market)
                     logger.debug(f"添加市场: {market.question[:50]}... 价格: {yes_price:.4f}")
             
+            # 输出过滤统计
+            logger.info(f"市场过滤统计: 总计={stats['total_markets']}, 已关闭={stats['closed']}, "
+                       f"已过期={stats['expired']}, 时间过远={stats['too_far']}, "
+                       f"无结束时间={stats['no_end_date']}, 无Token={stats['no_token']}, 通过={stats['passed']}")
+            
+            if stats['too_far'] > 0 and len(markets) == 0:
+                logger.warning(f"⚠️ 没有市场通过时间过滤！当前设置只查看未来{hours_filter}小时内结束的市场。"
+                              f"建议增大 time_filter_hours 参数或使用 all_markets=True 查看所有市场。")
+            
             logger.info(LogMessages.MARKET_SCAN_COMPLETE.format(count=len(markets)))
             return markets
             
@@ -342,13 +421,18 @@ class PolymarketClient:
             所有 sport 市场列表
         """
         try:
+            # 使用 end_date_min 和 order=endDate 按时间排序，最近的在前
+            min_date = (datetime.utcnow() - timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            
             response = await self._http_client.get(
                 f"{self.GAMMA_HOST}/events",
                 params={
                     "closed": "false",
                     "active": "true",
                     "tag_slug": "sports",
-                    "limit": limit
+                    "limit": limit,
+                    "order": "endDate",  # 按结束时间排序
+                    "end_date_min": min_date  # 包含正在进行的比赛
                 }
             )
             
@@ -376,10 +460,35 @@ class PolymarketClient:
                         except:
                             pass
                     
-                    # 获取 token 信息
-                    clob_token_ids = m.get("clobTokenIds", [])
-                    outcome_prices = m.get("outcomePrices", [])
-                    outcomes = m.get("outcomes", ["Yes", "No"])
+                    # 获取 token 信息 (API 返回的是 JSON 字符串，需要解析)
+                    clob_token_ids_raw = m.get("clobTokenIds", [])
+                    outcome_prices_raw = m.get("outcomePrices", [])
+                    outcomes_raw = m.get("outcomes", ["Yes", "No"])
+                    
+                    # 解析 JSON 字符串
+                    if isinstance(clob_token_ids_raw, str):
+                        try:
+                            clob_token_ids = json.loads(clob_token_ids_raw)
+                        except:
+                            clob_token_ids = []
+                    else:
+                        clob_token_ids = clob_token_ids_raw or []
+                    
+                    if isinstance(outcome_prices_raw, str):
+                        try:
+                            outcome_prices = json.loads(outcome_prices_raw)
+                        except:
+                            outcome_prices = []
+                    else:
+                        outcome_prices = outcome_prices_raw or []
+                    
+                    if isinstance(outcomes_raw, str):
+                        try:
+                            outcomes = json.loads(outcomes_raw)
+                        except:
+                            outcomes = ["Yes", "No"]
+                    else:
+                        outcomes = outcomes_raw or ["Yes", "No"]
                     
                     if not clob_token_ids or len(clob_token_ids) < 2:
                         continue
