@@ -217,14 +217,19 @@ class PolymarketClient:
         """
         try:
             # 使用 Gamma API 的 events 端点，通过 tag_slug 过滤 sport 事件
-            # 注意：需要较大的 limit 才能获取到所有体育赛事
+            # 使用 end_date_min 过滤，order=endDate 按时间排序（最近的在前）
+            # 注意：end_date_min 往前推2小时，以包含正在进行的比赛（比赛通常持续1-2小时）
+            min_date = (datetime.utcnow() - timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            
             response = await self._http_client.get(
                 f"{self.GAMMA_HOST}/events",
                 params={
                     "closed": "false",
                     "active": "true",
-                    "tag_slug": "sports",  # 直接过滤 sports 标签
-                    "limit": 500  # 增大 limit 以获取更多赛事
+                    "tag_slug": "sports",
+                    "limit": 200,  # 按时间排序后不需要太大的 limit
+                    "order": "endDate",  # 按结束时间排序，最近的在前
+                    "end_date_min": min_date  # 包含最近2小时内开始的比赛（正在进行中）
                 }
             )
             
@@ -416,14 +421,18 @@ class PolymarketClient:
             所有 sport 市场列表
         """
         try:
-            # 注意：需要较大的 limit 才能获取到所有体育赛事
+            # 使用 end_date_min 和 order=endDate 按时间排序，最近的在前
+            min_date = (datetime.utcnow() - timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            
             response = await self._http_client.get(
                 f"{self.GAMMA_HOST}/events",
                 params={
                     "closed": "false",
                     "active": "true",
                     "tag_slug": "sports",
-                    "limit": max(limit, 500)  # 至少500以获取更多赛事
+                    "limit": limit,
+                    "order": "endDate",  # 按结束时间排序
+                    "end_date_min": min_date  # 包含正在进行的比赛
                 }
             )
             
