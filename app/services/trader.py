@@ -116,51 +116,68 @@ class TradingService:
         cfg = config_manager.trading
         
         logger.info(LogMessages.MARKET_SCAN_START)
+        logger.info(f"入场配置: 入场价>={cfg.entry_price}, 时间过滤={cfg.time_filter_hours}小时")
         
         # 获取符合条件的市场
         markets = await polymarket_client.get_sport_markets(cfg.time_filter_hours)
+        
+        if not markets:
+            logger.info("没有市场通过时间过滤，无需检查入场条件")
+            return
+        
+        # 统计价格分布
+        price_below = 0
+        price_match = 0
         
         for market in markets:
             # 检查价格是否达到入场条件
             price = market.yes_price * 100  # 转换为0-100
             
-            # 价格达到入场价
-            if price >= cfg.entry_price:
-                # 检查是否已处理过
-                if market.id in self._processed_markets:
-                    continue
-                
-                # 检查是否已有仓位
-                if market.id in self._monitored_markets and self._monitored_markets[market.id].has_position:
-                    continue
-                
-                # 检查持仓限制
-                open_positions = len([m for m in self._monitored_markets.values() if m.has_position])
-                if open_positions >= cfg.max_open_positions:
-                    logger.warning(f"达到最大持仓数限制: {cfg.max_open_positions}")
-                    continue
-                
-                logger.info(f"发现入场信号: {market.question[:50]}... 价格: {price:.2f}")
-                
-                # 添加到监控
-                monitored = MonitoredMarket(
-                    market_id=market.id,
-                    token_id=market.token_id,
-                    market_question=market.question,
-                    entry_price=cfg.entry_price,
-                    stop_loss_price=cfg.stop_loss_price,
-                    current_price=price
+            if price < cfg.entry_price:
+                price_below += 1
+                logger.debug(f"价格未达入场: {market.question[:40]}... 价格={price:.2f} < {cfg.entry_price}")
+                continue
+            
+            price_match += 1
+            
+            # 检查是否已处理过
+            if market.id in self._processed_markets:
+                continue
+            
+            # 检查是否已有仓位
+            if market.id in self._monitored_markets and self._monitored_markets[market.id].has_position:
+                continue
+            
+            # 检查持仓限制
+            open_positions = len([m for m in self._monitored_markets.values() if m.has_position])
+            if open_positions >= cfg.max_open_positions:
+                logger.warning(f"达到最大持仓数限制: {cfg.max_open_positions}")
+                continue
+            
+            logger.info(f"发现入场信号: {market.question[:50]}... 价格: {price:.2f}")
+            
+            # 添加到监控
+            monitored = MonitoredMarket(
+                market_id=market.id,
+                token_id=market.token_id,
+                market_question=market.question,
+                entry_price=cfg.entry_price,
+                stop_loss_price=cfg.stop_loss_price,
+                current_price=price
+            )
+            self._monitored_markets[market.id] = monitored
+            
+            # 如果启用自动交易，执行买入
+            if cfg.auto_trading_enabled:
+                await self._execute_entry(market, price)
+            else:
+                # 发送价格提醒
+                await telegram_notifier.notify_price_alert(
+                    market.question, price, "entry"
                 )
-                self._monitored_markets[market.id] = monitored
-                
-                # 如果启用自动交易，执行买入
-                if cfg.auto_trading_enabled:
-                    await self._execute_entry(market, price)
-                else:
-                    # 发送价格提醒
-                    await telegram_notifier.notify_price_alert(
-                        market.question, price, "entry"
-                    )
+        
+        # 输出扫描统计
+        logger.info(f"入场条件检查: 通过时间过滤的市场={len(markets)}, 价格未达标={price_below}, 价格符合={price_match}")
     
     async def _monitor_loop(self):
         """价格监控循环"""
