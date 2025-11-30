@@ -296,10 +296,35 @@ class PolymarketClient:
                         stats["no_end_date"] += 1
                         continue
                     
-                    # 获取 token 信息
-                    clob_token_ids = m.get("clobTokenIds", [])
-                    outcome_prices = m.get("outcomePrices", [])
-                    outcomes = m.get("outcomes", ["Yes", "No"])
+                    # 获取 token 信息 (API 返回的是 JSON 字符串，需要解析)
+                    clob_token_ids_raw = m.get("clobTokenIds", [])
+                    outcome_prices_raw = m.get("outcomePrices", [])
+                    outcomes_raw = m.get("outcomes", ["Yes", "No"])
+                    
+                    # 解析 JSON 字符串
+                    if isinstance(clob_token_ids_raw, str):
+                        try:
+                            clob_token_ids = json.loads(clob_token_ids_raw)
+                        except:
+                            clob_token_ids = []
+                    else:
+                        clob_token_ids = clob_token_ids_raw or []
+                    
+                    if isinstance(outcome_prices_raw, str):
+                        try:
+                            outcome_prices = json.loads(outcome_prices_raw)
+                        except:
+                            outcome_prices = []
+                    else:
+                        outcome_prices = outcome_prices_raw or []
+                    
+                    if isinstance(outcomes_raw, str):
+                        try:
+                            outcomes = json.loads(outcomes_raw)
+                        except:
+                            outcomes = ["Yes", "No"]
+                    else:
+                        outcomes = outcomes_raw or ["Yes", "No"]
                     
                     if not clob_token_ids or len(clob_token_ids) < 2:
                         stats["no_token"] += 1
@@ -414,10 +439,35 @@ class PolymarketClient:
                         except:
                             pass
                     
-                    # 获取 token 信息
-                    clob_token_ids = m.get("clobTokenIds", [])
-                    outcome_prices = m.get("outcomePrices", [])
-                    outcomes = m.get("outcomes", ["Yes", "No"])
+                    # 获取 token 信息 (API 返回的是 JSON 字符串，需要解析)
+                    clob_token_ids_raw = m.get("clobTokenIds", [])
+                    outcome_prices_raw = m.get("outcomePrices", [])
+                    outcomes_raw = m.get("outcomes", ["Yes", "No"])
+                    
+                    # 解析 JSON 字符串
+                    if isinstance(clob_token_ids_raw, str):
+                        try:
+                            clob_token_ids = json.loads(clob_token_ids_raw)
+                        except:
+                            clob_token_ids = []
+                    else:
+                        clob_token_ids = clob_token_ids_raw or []
+                    
+                    if isinstance(outcome_prices_raw, str):
+                        try:
+                            outcome_prices = json.loads(outcome_prices_raw)
+                        except:
+                            outcome_prices = []
+                    else:
+                        outcome_prices = outcome_prices_raw or []
+                    
+                    if isinstance(outcomes_raw, str):
+                        try:
+                            outcomes = json.loads(outcomes_raw)
+                        except:
+                            outcomes = ["Yes", "No"]
+                    else:
+                        outcomes = outcomes_raw or ["Yes", "No"]
                     
                     if not clob_token_ids or len(clob_token_ids) < 2:
                         continue
