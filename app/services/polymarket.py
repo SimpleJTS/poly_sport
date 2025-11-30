@@ -14,13 +14,17 @@ import time
 import json
 
 from eth_account import Account
-from eth_account.messages import encode_defunct
 
 from app.models import Market, MarketPrice, Order, OrderSide, OrderStatus, Balance, Position
 from app.config import config_manager
 from app.utils.logger import get_logger, LogMessages
 
 logger = get_logger("polymarket")
+
+# EIP-712 相关常量
+CLOB_DOMAIN_NAME = "ClobAuthDomain"
+CLOB_VERSION = "1"
+MSG_TO_SIGN = "This message attests that I control the given wallet"
 
 
 class PolymarketClient:
@@ -57,30 +61,87 @@ class PolymarketClient:
         if self._http_client:
             await self._http_client.aclose()
     
+    def _build_eip712_domain(self) -> Dict:
+        """构建 EIP-712 Domain"""
+        return {
+            "name": CLOB_DOMAIN_NAME,
+            "version": CLOB_VERSION,
+            "chainId": self.CHAIN_ID
+        }
+    
+    def _build_clob_auth_struct(self, timestamp: int, nonce: int) -> Dict:
+        """构建 ClobAuth 结构"""
+        return {
+            "address": self._account.address,
+            "timestamp": str(timestamp),
+            "nonce": nonce,
+            "message": MSG_TO_SIGN
+        }
+    
+    def _sign_clob_auth_message(self, timestamp: int, nonce: int) -> str:
+        """
+        使用 EIP-712 签名认证消息
+        """
+        from eth_account.messages import encode_typed_data
+        
+        # 构建完整的 EIP-712 消息结构
+        full_message = {
+            "types": {
+                "EIP712Domain": [
+                    {"name": "name", "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                ],
+                "ClobAuth": [
+                    {"name": "address", "type": "address"},
+                    {"name": "timestamp", "type": "string"},
+                    {"name": "nonce", "type": "uint256"},
+                    {"name": "message", "type": "string"},
+                ]
+            },
+            "primaryType": "ClobAuth",
+            "domain": {
+                "name": CLOB_DOMAIN_NAME,
+                "version": CLOB_VERSION,
+                "chainId": self.CHAIN_ID
+            },
+            "message": {
+                "address": self._account.address,
+                "timestamp": str(timestamp),
+                "nonce": nonce,
+                "message": MSG_TO_SIGN
+            }
+        }
+        
+        signable_message = encode_typed_data(full_message=full_message)
+        signed = self._account.sign_message(signable_message)
+        return "0x" + signed.signature.hex()
+    
+    def _create_level_1_headers(self, nonce: int = 0) -> Dict[str, str]:
+        """创建 Level 1 认证头"""
+        timestamp = int(time.time())
+        signature = self._sign_clob_auth_message(timestamp, nonce)
+        
+        return {
+            "POLY_ADDRESS": self._account.address,
+            "POLY_SIGNATURE": signature,
+            "POLY_TIMESTAMP": str(timestamp),
+            "POLY_NONCE": str(nonce)
+        }
+    
     async def _derive_api_credentials(self):
         """派生API凭证"""
         if not self._account:
             return
         
         try:
-            # 创建CLOB API密钥
-            nonce = int(time.time() * 1000)
-            timestamp = int(time.time())
+            # 使用 Level 1 认证头（GET 请求）
+            headers = self._create_level_1_headers(nonce=0)
             
-            # 签名消息
-            message = f"polymarket-clob-api-key:{nonce}"
-            message_hash = encode_defunct(text=message)
-            signed = self._account.sign_message(message_hash)
-            
-            # 注册API密钥
-            response = await self._http_client.post(
+            # 先尝试派生已存在的 API Key
+            response = await self._http_client.get(
                 f"{self.CLOB_HOST}/auth/derive-api-key",
-                json={
-                    "message": message,
-                    "signature": signed.signature.hex(),
-                    "nonce": nonce,
-                    "timestamp": timestamp
-                }
+                headers=headers
             )
             
             if response.status_code == 200:
@@ -90,12 +151,33 @@ class PolymarketClient:
                     "api_secret": data.get("secret"),
                     "api_passphrase": data.get("passphrase")
                 }
-                logger.info("API凭证获取成功")
+                logger.info("API凭证获取成功（派生）")
+                return
+            
+            # 如果派生失败，尝试创建新的 API Key
+            logger.info("派生API凭证失败，尝试创建新凭证...")
+            headers = self._create_level_1_headers(nonce=0)
+            
+            response = await self._http_client.post(
+                f"{self.CLOB_HOST}/auth/api-key",
+                headers=headers
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                self._api_creds = {
+                    "api_key": data.get("apiKey"),
+                    "api_secret": data.get("secret"),
+                    "api_passphrase": data.get("passphrase")
+                }
+                logger.info("API凭证创建成功")
             else:
-                logger.error(f"获取API凭证失败: {response.text}")
+                logger.error(f"获取API凭证失败: {response.status_code} - {response.text}")
                 
         except Exception as e:
             logger.error(f"派生API凭证错误: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     def _get_auth_headers(self, method: str, path: str, body: str = "") -> Dict[str, str]:
         """生成认证头"""
@@ -134,84 +216,215 @@ class PolymarketClient:
             符合条件的市场列表
         """
         try:
-            # 使用Gamma API获取市场
+            # 使用 Gamma API 的 events 端点，通过 tag_slug 过滤 sport 事件
             response = await self._http_client.get(
-                f"{self.GAMMA_HOST}/markets",
+                f"{self.GAMMA_HOST}/events",
                 params={
                     "closed": "false",
                     "active": "true",
-                    "limit": 500
+                    "tag_slug": "sports",  # 直接过滤 sports 标签
+                    "limit": 100
                 }
             )
             
             if response.status_code != 200:
-                logger.error(f"获取市场列表失败: {response.text}")
+                logger.error(f"获取Sport事件列表失败: {response.text}")
                 return []
             
-            markets_data = response.json()
+            events_data = response.json()
             markets = []
             
             now = datetime.utcnow()
             filter_threshold = now + timedelta(hours=hours_filter)
             
-            for m in markets_data:
-                # 检查是否是sport市场
-                tags = m.get("tags", [])
-                category = m.get("category", "").lower()
+            logger.info(f"获取到 {len(events_data)} 个Sport事件")
+            
+            for event in events_data:
+                # 获取事件中的所有市场
+                event_markets = event.get("markets", [])
+                event_title = event.get("title", "")
+                event_tags = [t.get("label", "") for t in event.get("tags", [])]
                 
-                is_sport = (
-                    "sports" in [t.lower() for t in tags] or
-                    "sport" in category or
-                    "sports" in category or
-                    any(sport in category for sport in ['nba', 'nfl', 'mlb', 'nhl', 'soccer', 'football', 'basketball', 'baseball'])
-                )
+                logger.debug(f"事件: {event_title}, 市场数: {len(event_markets)}, 标签: {event_tags}")
                 
-                if not is_sport:
-                    continue
-                
-                # 解析结束时间
-                end_date_str = m.get("endDate") or m.get("end_date_iso")
-                end_date = None
-                if end_date_str:
-                    try:
-                        end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00")).replace(tzinfo=None)
-                    except:
-                        pass
-                
-                # 时间过滤：只保留即将结算的市场
-                if end_date and end_date > filter_threshold:
-                    continue
-                
-                # 获取token信息
-                tokens = m.get("tokens", [])
-                if not tokens:
-                    continue
-                
-                # 通常取YES token
-                yes_token = next((t for t in tokens if t.get("outcome") == "Yes"), tokens[0])
-                
-                market = Market(
-                    id=m.get("conditionId") or m.get("condition_id", ""),
-                    condition_id=m.get("conditionId") or m.get("condition_id", ""),
-                    question=m.get("question", ""),
-                    slug=m.get("slug", ""),
-                    yes_price=float(yes_token.get("price", 0) or 0),
-                    no_price=1 - float(yes_token.get("price", 0) or 0),
-                    category=category,
-                    end_date=end_date,
-                    volume=float(m.get("volume", 0) or 0),
-                    liquidity=float(m.get("liquidity", 0) or 0),
-                    token_id=yes_token.get("token_id", ""),
-                    outcome="Yes"
-                )
-                
-                markets.append(market)
+                for m in event_markets:
+                    # 检查市场是否关闭
+                    if m.get("closed", False):
+                        continue
+                    
+                    # 解析结束时间
+                    end_date_str = m.get("endDate")
+                    end_date = None
+                    if end_date_str:
+                        try:
+                            end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00")).replace(tzinfo=None)
+                        except Exception as e:
+                            logger.debug(f"解析日期失败: {end_date_str}, 错误: {e}")
+                    
+                    # 时间过滤：只保留即将结算的市场（在 hours_filter 小时内结束）
+                    if end_date:
+                        if end_date < now:
+                            # 已过期
+                            continue
+                        if end_date > filter_threshold:
+                            # 还没到尾盘时间
+                            continue
+                    
+                    # 获取 token 信息
+                    clob_token_ids = m.get("clobTokenIds", [])
+                    outcome_prices = m.get("outcomePrices", [])
+                    outcomes = m.get("outcomes", ["Yes", "No"])
+                    
+                    if not clob_token_ids or len(clob_token_ids) < 2:
+                        logger.debug(f"市场缺少 token 信息: {m.get('question', '')[:50]}")
+                        continue
+                    
+                    # 解析价格
+                    yes_price = 0.0
+                    no_price = 0.0
+                    
+                    if outcome_prices and len(outcome_prices) >= 2:
+                        try:
+                            yes_price = float(outcome_prices[0] or 0)
+                            no_price = float(outcome_prices[1] or 0)
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    # 如果没有 outcomePrices，尝试从其他字段获取
+                    if yes_price == 0:
+                        yes_price = float(m.get("bestAsk", 0) or m.get("lastTradePrice", 0) or 0)
+                        no_price = 1 - yes_price if yes_price > 0 else 0
+                    
+                    # 获取 YES token ID（第一个通常是 Yes）
+                    yes_token_id = clob_token_ids[0]
+                    
+                    condition_id = m.get("conditionId", "")
+                    
+                    # 构建类别字符串
+                    category = ", ".join(event_tags) if event_tags else "Sports"
+                    
+                    market = Market(
+                        id=condition_id or str(m.get("id", "")),
+                        condition_id=condition_id,
+                        question=m.get("question", ""),
+                        slug=m.get("slug", ""),
+                        yes_price=yes_price,
+                        no_price=no_price,
+                        category=category,
+                        end_date=end_date,
+                        volume=float(m.get("volume", 0) or 0),
+                        liquidity=float(m.get("liquidity", 0) or 0),
+                        token_id=yes_token_id,
+                        outcome=outcomes[0] if outcomes else "Yes"
+                    )
+                    
+                    markets.append(market)
+                    logger.debug(f"添加市场: {market.question[:50]}... 价格: {yes_price:.4f}")
             
             logger.info(LogMessages.MARKET_SCAN_COMPLETE.format(count=len(markets)))
             return markets
             
         except Exception as e:
             logger.error(LogMessages.API_ERROR.format(error=str(e)))
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+    
+    async def get_all_sport_markets(self, limit: int = 100) -> List[Market]:
+        """
+        获取所有Sport市场（不做时间过滤）
+        用于浏览和调试
+        
+        Args:
+            limit: 返回的最大事件数
+        
+        Returns:
+            所有 sport 市场列表
+        """
+        try:
+            response = await self._http_client.get(
+                f"{self.GAMMA_HOST}/events",
+                params={
+                    "closed": "false",
+                    "active": "true",
+                    "tag_slug": "sports",
+                    "limit": limit
+                }
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"获取Sport事件列表失败: {response.text}")
+                return []
+            
+            events_data = response.json()
+            markets = []
+            
+            for event in events_data:
+                event_markets = event.get("markets", [])
+                event_tags = [t.get("label", "") for t in event.get("tags", [])]
+                
+                for m in event_markets:
+                    if m.get("closed", False):
+                        continue
+                    
+                    # 解析结束时间
+                    end_date_str = m.get("endDate")
+                    end_date = None
+                    if end_date_str:
+                        try:
+                            end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00")).replace(tzinfo=None)
+                        except:
+                            pass
+                    
+                    # 获取 token 信息
+                    clob_token_ids = m.get("clobTokenIds", [])
+                    outcome_prices = m.get("outcomePrices", [])
+                    outcomes = m.get("outcomes", ["Yes", "No"])
+                    
+                    if not clob_token_ids or len(clob_token_ids) < 2:
+                        continue
+                    
+                    # 解析价格
+                    yes_price = 0.0
+                    no_price = 0.0
+                    
+                    if outcome_prices and len(outcome_prices) >= 2:
+                        try:
+                            yes_price = float(outcome_prices[0] or 0)
+                            no_price = float(outcome_prices[1] or 0)
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    if yes_price == 0:
+                        yes_price = float(m.get("bestAsk", 0) or m.get("lastTradePrice", 0) or 0)
+                        no_price = 1 - yes_price if yes_price > 0 else 0
+                    
+                    yes_token_id = clob_token_ids[0]
+                    condition_id = m.get("conditionId", "")
+                    category = ", ".join(event_tags) if event_tags else "Sports"
+                    
+                    market = Market(
+                        id=condition_id or str(m.get("id", "")),
+                        condition_id=condition_id,
+                        question=m.get("question", ""),
+                        slug=m.get("slug", ""),
+                        yes_price=yes_price,
+                        no_price=no_price,
+                        category=category,
+                        end_date=end_date,
+                        volume=float(m.get("volume", 0) or 0),
+                        liquidity=float(m.get("liquidity", 0) or 0),
+                        token_id=yes_token_id,
+                        outcome=outcomes[0] if outcomes else "Yes"
+                    )
+                    
+                    markets.append(market)
+            
+            logger.info(f"获取到 {len(markets)} 个Sport市场（不含时间过滤）")
+            return markets
+            
+        except Exception as e:
+            logger.error(f"获取Sport市场失败: {e}")
             return []
     
     async def get_market_price(self, token_id: str) -> Optional[MarketPrice]:

@@ -144,9 +144,20 @@ async def get_positions():
 # ============ 市场信息 ============
 
 @router.get("/markets/sport")
-async def get_sport_markets(hours: float = 1.0, min_price: float = 0, max_price: float = 100):
-    """获取Sport市场列表"""
-    if min_price > 0 or max_price < 100:
+async def get_sport_markets(hours: float = 1.0, min_price: float = 0, max_price: float = 100, all_markets: bool = False):
+    """
+    获取Sport市场列表
+    
+    Args:
+        hours: 时间过滤（小时），只返回在此时间内结束的市场
+        min_price: 最小价格过滤 (0-100)
+        max_price: 最大价格过滤 (0-100)
+        all_markets: 如果为 True，返回所有 sport 市场（不做时间过滤）
+    """
+    if all_markets:
+        # 获取所有 sport 市场，不做时间过滤
+        markets = await polymarket_client.get_all_sport_markets(limit=100)
+    elif min_price > 0 or max_price < 100:
         markets = await polymarket_client.get_markets_by_price(
             min_price=min_price,
             max_price=max_price,
