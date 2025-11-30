@@ -217,13 +217,14 @@ class PolymarketClient:
         """
         try:
             # 使用 Gamma API 的 events 端点，通过 tag_slug 过滤 sport 事件
+            # 注意：需要较大的 limit 才能获取到所有体育赛事
             response = await self._http_client.get(
                 f"{self.GAMMA_HOST}/events",
                 params={
                     "closed": "false",
                     "active": "true",
                     "tag_slug": "sports",  # 直接过滤 sports 标签
-                    "limit": 100
+                    "limit": 500  # 增大 limit 以获取更多赛事
                 }
             )
             
@@ -276,20 +277,30 @@ class PolymarketClient:
                         except Exception as e:
                             logger.debug(f"解析日期失败: {end_date_str}, 错误: {e}")
                     
-                    # 时间过滤：只保留即将结算的市场（在 hours_filter 小时内结束）
+                    # 时间过滤：保留即将结算或正在进行的市场
+                    # 注意：endDate 通常表示比赛开始/投注截止时间，不是市场关闭时间
+                    # 如果市场 closed=False，即使 endDate 已过，市场可能仍在进行中（live）
+                    
                     if end_date:
                         if end_date < now:
-                            # 已过期
-                            stats["expired"] += 1
-                            continue
-                        if end_date > filter_threshold:
+                            # endDate 已过，但市场未关闭，可能是正在进行的比赛
+                            # 允许最近 2 小时内开始的比赛（比赛通常持续1-2小时）
+                            hours_since_start = (now - end_date).total_seconds() / 3600
+                            if hours_since_start > 2:
+                                # 超过2小时，真正过期了
+                                stats["expired"] += 1
+                                continue
+                            else:
+                                # 可能正在进行中，保留
+                                logger.debug(f"市场可能正在进行: {m.get('question', '')[:50]}... 开始于 {hours_since_start:.1f}小时前")
+                        elif end_date > filter_threshold:
                             # 还没到尾盘时间
                             stats["too_far"] += 1
                             # 输出最近的几个市场结束时间，帮助诊断
                             if stats["too_far"] <= 3:
                                 time_diff = end_date - now
                                 hours_until = time_diff.total_seconds() / 3600
-                                logger.debug(f"市场时间过滤: {m.get('question', '')[:50]}... 结束于 {end_date.strftime('%Y-%m-%d %H:%M')} ({hours_until:.1f}小时后)")
+                                logger.debug(f"市场时间过滤: {m.get('question', '')[:50]}... 开始于 {end_date.strftime('%Y-%m-%d %H:%M')} ({hours_until:.1f}小时后)")
                             continue
                     else:
                         # 没有结束日期的市场也跳过（除非特别配置）
@@ -405,13 +416,14 @@ class PolymarketClient:
             所有 sport 市场列表
         """
         try:
+            # 注意：需要较大的 limit 才能获取到所有体育赛事
             response = await self._http_client.get(
                 f"{self.GAMMA_HOST}/events",
                 params={
                     "closed": "false",
                     "active": "true",
                     "tag_slug": "sports",
-                    "limit": limit
+                    "limit": max(limit, 500)  # 至少500以获取更多赛事
                 }
             )
             
