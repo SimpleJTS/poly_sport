@@ -72,6 +72,13 @@ def setup_logger(name: str = "polymarket_trader", log_dir: str = "logs") -> logg
     
     logger.setLevel(logging.DEBUG)
     
+    # 禁用HTTP库和Web服务器的日志输出（只保留错误）
+    http_loggers = ['httpx', 'httpcore', 'urllib3', 'requests', 'urllib', 'uvicorn.access', 'uvicorn']
+    for http_logger_name in http_loggers:
+        http_logger = logging.getLogger(http_logger_name)
+        http_logger.setLevel(logging.WARNING)  # 只显示警告和错误
+        http_logger.propagate = False  # 不传播到父logger
+    
     # 日志格式 - 中文
     log_format = "%(asctime)s | %(levelname_cn)s | %(name)s | %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
@@ -88,9 +95,9 @@ def setup_logger(name: str = "polymarket_trader", log_dir: str = "logs") -> logg
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
     
-    # 控制台处理器
+    # 控制台处理器 - 只显示警告和错误
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(logging.WARNING)  # 只显示 WARNING 和 ERROR
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
     
