@@ -386,6 +386,29 @@
             background: var(--bg-tertiary);
         }
 
+        .market-table th.sortable {
+            cursor: pointer;
+            user-select: none;
+            transition: all 0.2s ease;
+        }
+
+        .market-table th.sortable:hover {
+            color: var(--text-primary);
+            background: var(--bg-hover);
+        }
+
+        .sort-indicator {
+            display: inline-block;
+            margin-left: 4px;
+            font-size: 0.7rem;
+            opacity: 0.5;
+        }
+
+        .sort-indicator.active {
+            opacity: 1;
+            color: var(--accent-green);
+        }
+
         .market-table td {
             padding: 12px 16px;
             font-size: 0.875rem;
@@ -653,13 +676,23 @@
                             <thead>
                                 <tr>
                                     <th>市场</th>
-                                    <th>价格</th>
-                                    <th>结算时间</th>
+                                    <th class="sortable" @click="sortMarkets('price')">
+                                        价格
+                                        <span :class="['sort-indicator', sortBy === 'price' && 'active']">
+                                            {{ sortBy === 'price' ? (sortOrder === 'asc' ? '↑' : '↓') : '↕' }}
+                                        </span>
+                                    </th>
+                                    <th class="sortable" @click="sortMarkets('time')">
+                                        结算时间
+                                        <span :class="['sort-indicator', sortBy === 'time' && 'active']">
+                                            {{ sortBy === 'time' ? (sortOrder === 'asc' ? '↑' : '↓') : '↕' }}
+                                        </span>
+                                    </th>
                                     <th>操作</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr v-for="market in markets" :key="market.id">
+                                <tr v-for="market in sortedMarkets" :key="market.id">
                                     <td class="market-question" :title="market.question">
                                         {{ market.question }}
                                     </td>
@@ -871,7 +904,7 @@
     </div>
 
     <script>
-        const { createApp, ref, reactive, onMounted } = Vue;
+        const { createApp, ref, reactive, onMounted, computed } = Vue;
 
         createApp({
             setup() {
@@ -911,6 +944,10 @@
                 const positions = ref([]);
                 const logs = ref([]);
                 const toast = reactive({ show: false, message: '', type: 'success' });
+
+                // Sorting state
+                const sortBy = ref('price');  // 'price' or 'time'
+                const sortOrder = ref('desc');  // 'asc' or 'desc'
 
                 // Methods
                 const showToast = (message, type = 'success') => {
@@ -1152,6 +1189,38 @@
                     return `${hours}小时${mins}分`;
                 };
 
+                // Sorting
+                const sortMarkets = (field) => {
+                    if (sortBy.value === field) {
+                        // Toggle order if clicking the same field
+                        sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc';
+                    } else {
+                        // Default to descending for price, ascending for time
+                        sortBy.value = field;
+                        sortOrder.value = field === 'price' ? 'desc' : 'asc';
+                    }
+                };
+
+                const sortedMarkets = computed(() => {
+                    const marketsCopy = [...markets.value];
+
+                    if (sortBy.value === 'price') {
+                        marketsCopy.sort((a, b) => {
+                            const priceA = a.yes_price * 100;
+                            const priceB = b.yes_price * 100;
+                            return sortOrder.value === 'asc' ? priceA - priceB : priceB - priceA;
+                        });
+                    } else if (sortBy.value === 'time') {
+                        marketsCopy.sort((a, b) => {
+                            const dateA = a.end_date ? new Date(a.end_date).getTime() : 0;
+                            const dateB = b.end_date ? new Date(b.end_date).getTime() : 0;
+                            return sortOrder.value === 'asc' ? dateA - dateB : dateB - dateA;
+                        });
+                    }
+
+                    return marketsCopy;
+                });
+
                 // Lifecycle
                 onMounted(async () => {
                     addLog('系统初始化...', 'info');
@@ -1180,6 +1249,9 @@
                     positions,
                     logs,
                     toast,
+                    sortBy,
+                    sortOrder,
+                    sortedMarkets,
                     startTrading,
                     stopTrading,
                     saveTradingConfig,
@@ -1189,6 +1261,7 @@
                     buyMarket,
                     sellPosition,
                     refreshData,
+                    sortMarkets,
                     getPriceClass,
                     formatEndDate
                 };

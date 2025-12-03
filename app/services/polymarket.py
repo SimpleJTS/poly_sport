@@ -274,8 +274,8 @@ class PolymarketClient:
         try:
             # 使用 Gamma API 的 events 端点，通过 tag_slug 过滤 sport 事件
             # 使用 end_date_min 过滤，order=endDate 按时间排序（最近的在前）
-            # 注意：end_date_min 往前推2小时，以包含正在进行的比赛（比赛通常持续1-2小时）
-            min_date = (datetime.utcnow() - timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            # 注意：end_date_min 往前推24小时，以包含正在进行或刚结束的比赛
+            min_date = (datetime.utcnow() - timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%SZ')
             
             response = await self._http_client.get(
                 f"{self.GAMMA_HOST}/events",
@@ -323,10 +323,12 @@ class PolymarketClient:
                 
                 for m in event_markets:
                     stats["total_markets"] += 1
-                    
+                    market_question = m.get("question", "")
+
                     # 检查市场是否关闭
                     if m.get("closed", False):
                         stats["closed"] += 1
+                        logger.debug(f"市场已关闭: {market_question[:50]}...")
                         continue
                     
                     # 解析结束时间
@@ -341,18 +343,19 @@ class PolymarketClient:
                     # 时间过滤：保留即将结算或正在进行的市场
                     # 注意：endDate 通常表示比赛开始/投注截止时间，不是市场关闭时间
                     # 如果市场 closed=False，即使 endDate 已过，市场可能仍在进行中（live）
-                    
+
                     if end_date:
                         if end_date < now:
                             # endDate 已过，但市场未关闭，可能是正在进行的比赛
-                            # 允许最近 2 小时内开始的比赛（比赛通常持续1-2小时）
+                            # 扩大时间窗口到24小时，允许正在进行或刚结束的比赛
                             hours_since_start = (now - end_date).total_seconds() / 3600
-                            if hours_since_start > 2:
-                                # 超过2小时，真正过期了
+                            if hours_since_start > 24:
+                                # 超过24小时，真正过期了
                                 stats["expired"] += 1
+                                logger.debug(f"市场已过期: {m.get('question', '')[:50]}... 开始于 {hours_since_start:.1f}小时前")
                                 continue
                             else:
-                                # 可能正在进行中，保留
+                                # 可能正在进行中或刚结束，保留
                                 logger.debug(f"市场可能正在进行: {m.get('question', '')[:50]}... 开始于 {hours_since_start:.1f}小时前")
                         elif end_date > filter_threshold:
                             # 还没到尾盘时间
@@ -478,7 +481,7 @@ class PolymarketClient:
         """
         try:
             # 使用 end_date_min 和 order=endDate 按时间排序，最近的在前
-            min_date = (datetime.utcnow() - timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            min_date = (datetime.utcnow() - timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%SZ')
             
             response = await self._http_client.get(
                 f"{self.GAMMA_HOST}/events",
