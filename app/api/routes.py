@@ -149,7 +149,7 @@ async def get_sport_markets(hours: float = 1.0, min_price: float = 0, max_price:
     获取Sport市场列表
     
     Args:
-        hours: 时间过滤（小时），只返回在此时间内结束的市场
+        hours: 时间过滤（小时），返回在此时间内开始或已开始的市场（比赛进行中仍可投注）
         min_price: 最小价格过滤 (0-100)
         max_price: 最大价格过滤 (0-100)
         all_markets: 如果为 True，返回所有 sport 市场（不做时间过滤）
@@ -208,24 +208,37 @@ async def manual_buy(
     token_id: str,
     price: float,
     amount: float,
-    market_question: str = ""
+    market_question: str = "",
+    market_order: bool = False
 ):
     """手动买入"""
-    order = await trading_service.manual_buy(
-        market_id=market_id,
-        token_id=token_id,
-        price=price,
-        amount=amount,
-        market_question=market_question
-    )
-    
-    if order:
-        return ApiResponse(
-            success=True,
-            message="买入订单已提交",
-            data=order.model_dump()
+    try:
+        order = await trading_service.manual_buy(
+            market_id=market_id,
+            token_id=token_id,
+            price=price,
+            amount=amount,
+            market_question=market_question,
+            market_order=market_order
         )
-    raise HTTPException(status_code=400, detail="下单失败")
+        
+        if order:
+            return ApiResponse(
+                success=True,
+                message="买入订单已提交",
+                data=order.model_dump()
+            )
+        else:
+            return ApiResponse(
+                success=False,
+                message="下单失败，请检查日志或配置"
+            )
+    except Exception as e:
+        logger.error(f"手动买入异常: {e}", exc_info=True)
+        return ApiResponse(
+            success=False,
+            message=f"下单失败: {str(e)}"
+        )
 
 
 @router.post("/trade/sell/{market_id}")
