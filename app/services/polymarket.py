@@ -541,7 +541,7 @@ class PolymarketClient:
             if market_order:
                 # 市价订单
                 logger.debug(f"市价订单 - tokenID: {str(token_id)[:20]}..., amount: {amount}, side: {side.value}")
-                
+
                 # 创建市价订单参数
                 # 市价订单使用 amount（金额），price 不设置或设为 0，系统会自动计算市场价格
                 market_order_args = MarketOrderArgs(
@@ -551,55 +551,12 @@ class PolymarketClient:
                     price=0,  # 设为 0，create_market_order 会自动计算市场价格
                     order_type=OrderType.FOK  # Fill or Kill
                 )
-                
-                # 创建市价订单（返回 SignedOrder）
-                # create_market_order 会自动计算市场价格并创建签名订单
-                signed_order = await loop.run_in_executor(
+
+                # 使用 post_market_order 一步完成市价订单（自动处理签名和提交）
+                response = await loop.run_in_executor(
                     None,
-                    lambda: self._clob_client.create_market_order(market_order_args)
+                    lambda: self._clob_client.post_market_order(market_order_args)
                 )
-                
-                # 从 SignedOrder 中获取订单信息
-                order_data = signed_order.order
-                
-                # 获取订单信息（使用 dict() 方法或直接访问属性）
-                if hasattr(order_data, 'dict'):
-                    order_dict = order_data.dict()
-                elif hasattr(order_data, '__dict__'):
-                    order_dict = order_data.__dict__
-                else:
-                    # 尝试直接访问属性
-                    order_dict = {
-                        'token_id': getattr(order_data, 'token_id', token_id),
-                        'price': getattr(order_data, 'price', 0),
-                        'size': getattr(order_data, 'size', 0),
-                        'side': getattr(order_data, 'side', side.value.upper()),
-                    }
-                
-                # 获取价格（已经是0-1范围   ，需要转换为0-100）
-                actual_price = float(order_dict.get('price', 0)) * 100
-                actual_size = float(order_dict.get('size', 0))
-                
-                # 提交订单
-                # 注意：post_order 可能需要 Order 对象而不是 SignedOrder
-                # 但根据文档，应该传递 SignedOrder 对象
-                # 如果签名错误，可能需要使用 signed_order.order
-                try:
-                    response = await loop.run_in_executor(
-                        None,
-                        lambda: self._clob_client.post_order(signed_order, orderType=OrderType.FOK)
-                    )
-                except Exception as post_error:
-                    # 如果使用 SignedOrder 失败，尝试使用 order 属性
-                    error_msg = str(post_error)
-                    if "signature" in error_msg.lower() or "invalid" in error_msg.lower():
-                        logger.warning(f"使用 SignedOrder 提交失败，尝试使用 order 属性: {error_msg}")
-                        response = await loop.run_in_executor(
-                            None,
-                            lambda: self._clob_client.post_order(signed_order.order, orderType=OrderType.FOK)
-                        )
-                    else:
-                        raise
                 
                 # 处理提交响应
                 if response:
@@ -613,53 +570,36 @@ class PolymarketClient:
                             return None
                         else:
                             data = response
-                        
+
                         # 从响应中获取订单ID
                         order_id = str(data.get("orderID", data.get("id", "")))
                         if not order_id:
                             # 如果没有ID，使用订单数据中的信息生成
                             import uuid
                             order_id = str(uuid.uuid4())
-                        
-                        # 如果响应中有实际成交信息，使用响应中的数据
-                        if data.get("price") or data.get("avgPrice"):
-                            actual_price = float(data.get("price", data.get("avgPrice", 0))) * 100
-                        if data.get("size") or data.get("filledSize"):
-                            actual_size = float(data.get("size", data.get("filledSize", 0)))
-                        
+
+                        # 获取实际成交信息
+                        actual_price = float(data.get("price", data.get("avgPrice", 0))) * 100
+                        actual_size = float(data.get("size", data.get("filledSize", 0)))
+
                         # 计算实际金额
                         actual_amount = actual_size * actual_price / 100 if actual_price > 0 else amount
-                        
+
                         order = Order(
                             id=order_id,
                             market_id=str(data.get("market", "")),
                             token_id=token_id,
                             side=side,
                             price=actual_price if actual_price > 0 else price,
-                            size=actual_size if actual_size > 0 else (amount / (price / 100) if price > 0 else 0),
+                            size=actual_size if actual_size > 0 else 0,
                             amount=actual_amount if actual_amount > 0 else amount,
                             status=OrderStatus.OPEN
                         )
                         logger.debug(f"市价订单成功 - 订单ID: {order.id}, 成交价格: {actual_price:.2f}¢, 数量: {actual_size:.4f}")
                         return order
                     else:
-                        # 如果响应不是字典，使用从订单数据中获取的信息
-                        import uuid
-                        order_id = str(uuid.uuid4())
-                        actual_amount = actual_size * actual_price / 100 if actual_price > 0 else amount
-                        
-                        order = Order(
-                            id=order_id,
-                            market_id="",
-                            token_id=token_id,
-                            side=side,
-                            price=actual_price if actual_price > 0 else price,
-                            size=actual_size if actual_size > 0 else (amount / (price / 100) if price > 0 else 0),
-                            amount=actual_amount if actual_amount > 0 else amount,
-                            status=OrderStatus.OPEN
-                        )
-                        logger.debug(f"市价订单成功 - 订单ID: {order.id}, 成交价格: {actual_price:.2f}¢, 数量: {actual_size:.4f}")
-                        return order
+                        logger.error(f"市价订单响应格式未知: {type(response)}")
+                        return None
                 else:
                     logger.error("市价订单提交失败: 无响应")
                     return None
@@ -694,38 +634,11 @@ class PolymarketClient:
 
                 logger.debug(f"限价订单 - tokenID: {str(token_id)[:20]}..., price: {price_decimal}, size: {size}, side: {side.value}")
 
-                # 分步骤创建和提交订单（避免签名错误）
-                # 第1步：创建签名订单
-                signed_order = await loop.run_in_executor(
+                # 使用 create_and_post_order 一步完成（自动处理签名）
+                response = await loop.run_in_executor(
                     None,
-                    lambda: self._clob_client.create_order(order_args)
+                    lambda: self._clob_client.create_and_post_order(order_args)
                 )
-
-                if not signed_order:
-                    logger.error("创建签名订单失败")
-                    return None
-
-                # 第2步：提交订单
-                try:
-                    response = await loop.run_in_executor(
-                        None,
-                        lambda: self._clob_client.post_order(signed_order, orderType=OrderType.GTC)
-                    )
-                except Exception as post_error:
-                    # 如果使用 SignedOrder 失败，尝试使用 order 属性
-                    error_msg = str(post_error)
-                    if "signature" in error_msg.lower() or "invalid" in error_msg.lower():
-                        logger.warning(f"使用 SignedOrder 提交失败，尝试使用 order 属性: {error_msg}")
-                        try:
-                            response = await loop.run_in_executor(
-                                None,
-                                lambda: self._clob_client.post_order(signed_order.order, orderType=OrderType.GTC)
-                            )
-                        except Exception as e2:
-                            logger.error(f"使用 order 属性提交也失败: {e2}")
-                            raise post_error
-                    else:
-                        raise
 
                 # 处理响应（py_clob_client 可能返回不同的格式）
                 if response:
