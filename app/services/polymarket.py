@@ -12,6 +12,7 @@ import hashlib
 import base64
 import time
 import json
+import secrets
 
 from eth_account import Account
 
@@ -25,6 +26,11 @@ logger = get_logger("polymarket")
 CLOB_DOMAIN_NAME = "ClobAuthDomain"
 CLOB_VERSION = "1"
 MSG_TO_SIGN = "This message attests that I control the given wallet"
+
+# 订单相关常量
+ORDER_DOMAIN_NAME = "Polymarket CTF Exchange"
+ORDER_VERSION = "1"
+ORDER_VERIFYING_CONTRACT = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"  # Polygon mainnet
 
 
 class PolymarketClient:
@@ -83,7 +89,7 @@ class PolymarketClient:
         使用 EIP-712 签名认证消息
         """
         from eth_account.messages import encode_typed_data
-        
+
         # 构建完整的 EIP-712 消息结构
         full_message = {
             "types": {
@@ -112,7 +118,57 @@ class PolymarketClient:
                 "message": MSG_TO_SIGN
             }
         }
-        
+
+        signable_message = encode_typed_data(full_message=full_message)
+        signed = self._account.sign_message(signable_message)
+        return "0x" + signed.signature.hex()
+
+    def _sign_order(self, order_data: Dict) -> str:
+        """
+        使用 EIP-712 签名订单
+
+        Args:
+            order_data: 订单数据，包含 salt, maker, signer, taker, tokenId, makerAmount, takerAmount, expiration, nonce, feeRateBps, side, signatureType
+
+        Returns:
+            签名字符串
+        """
+        from eth_account.messages import encode_typed_data
+
+        # 构建完整的 EIP-712 消息结构
+        full_message = {
+            "types": {
+                "EIP712Domain": [
+                    {"name": "name", "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                    {"name": "verifyingContract", "type": "address"},
+                ],
+                "Order": [
+                    {"name": "salt", "type": "uint256"},
+                    {"name": "maker", "type": "address"},
+                    {"name": "signer", "type": "address"},
+                    {"name": "taker", "type": "address"},
+                    {"name": "tokenId", "type": "uint256"},
+                    {"name": "makerAmount", "type": "uint256"},
+                    {"name": "takerAmount", "type": "uint256"},
+                    {"name": "expiration", "type": "uint256"},
+                    {"name": "nonce", "type": "uint256"},
+                    {"name": "feeRateBps", "type": "uint256"},
+                    {"name": "side", "type": "uint8"},
+                    {"name": "signatureType", "type": "uint8"},
+                ]
+            },
+            "primaryType": "Order",
+            "domain": {
+                "name": ORDER_DOMAIN_NAME,
+                "version": ORDER_VERSION,
+                "chainId": self.CHAIN_ID,
+                "verifyingContract": ORDER_VERIFYING_CONTRACT
+            },
+            "message": order_data
+        }
+
         signable_message = encode_typed_data(full_message=full_message)
         signed = self._account.sign_message(signable_message)
         return "0x" + signed.signature.hex()
@@ -596,51 +652,99 @@ class PolymarketClient:
     
     # ============ 交易相关 ============
     
-    async def place_order(self, token_id: str, side: OrderSide, price: float, 
+    async def place_order(self, token_id: str, side: OrderSide, price: float,
                          amount: float) -> Optional[Order]:
         """
         下单
-        
+
         Args:
             token_id: Token ID
             side: 买卖方向
             price: 价格（0-100）
             amount: 金额（USDC）
-        
+
         Returns:
             订单对象
         """
         if not self._api_creds or not self._account:
             logger.error("未初始化API凭证，无法下单")
             return None
-        
+
         try:
             # 将价格转换为0-1范围
             price_decimal = price / 100
-            
-            # 计算数量
+
+            # 计算数量（以wei为单位，Polymarket使用6位小数的USDC）
             size = amount / price_decimal
-            
-            # 构建订单
-            order_data = {
-                "tokenID": token_id,
-                "price": str(price_decimal),
-                "size": str(size),
-                "side": side.value,
-                "type": "GTC"  # Good Till Cancel
+            size_in_decimals = int(size * 1_000_000)  # 转换为6位小数的整数
+
+            # 计算maker和taker的数量
+            # BUY: makerAmount是要支付的USDC，takerAmount是要获得的token
+            # SELL: makerAmount是要卖出的token，takerAmount是要获得的USDC
+            if side == OrderSide.BUY:
+                maker_amount = str(int(amount * 1_000_000))  # USDC数量（6位小数）
+                taker_amount = str(size_in_decimals)  # token数量（6位小数）
+                side_value = 0  # BUY = 0
+            else:
+                maker_amount = str(size_in_decimals)  # token数量（6位小数）
+                taker_amount = str(int(amount * 1_000_000))  # USDC数量（6位小数）
+                side_value = 1  # SELL = 1
+
+            # 生成订单参数
+            salt = secrets.randbits(256)  # 随机salt
+            current_time = int(time.time())
+            expiration = current_time + (30 * 24 * 60 * 60)  # 30天后过期
+
+            # 构建订单数据（用于签名）
+            order_struct = {
+                "salt": salt,
+                "maker": self._account.address,
+                "signer": self._account.address,
+                "taker": "0x0000000000000000000000000000000000000000",  # 公开订单
+                "tokenId": int(token_id),
+                "makerAmount": maker_amount,
+                "takerAmount": taker_amount,
+                "expiration": expiration,
+                "nonce": 0,
+                "feeRateBps": 0,  # 默认手续费率
+                "side": side_value,
+                "signatureType": 0,  # EOA签名
             }
-            
-            body = json.dumps(order_data)
+
+            # 签名订单
+            signature = self._sign_order(order_struct)
+
+            # 构建提交到API的订单
+            signed_order = {
+                "salt": str(salt),
+                "maker": self._account.address,
+                "signer": self._account.address,
+                "taker": "0x0000000000000000000000000000000000000000",
+                "tokenId": token_id,
+                "makerAmount": maker_amount,
+                "takerAmount": taker_amount,
+                "expiration": str(expiration),
+                "nonce": "0",
+                "feeRateBps": "0",
+                "side": "BUY" if side == OrderSide.BUY else "SELL",
+                "signatureType": "0",
+                "signature": signature,
+            }
+
+            body = json.dumps(signed_order)
             path = "/order"
             headers = self._get_auth_headers("POST", path, body)
             headers["Content-Type"] = "application/json"
-            
+
+            logger.info(f"提交订单: {side.value} {size:.2f} @ {price:.4f} (token_id: {token_id})")
+            logger.debug(f"订单签名: {signature[:20]}...")
+
             response = await self._http_client.post(
                 f"{self.CLOB_HOST}{path}",
                 content=body,
                 headers=headers
             )
-            
+
             if response.status_code in [200, 201]:
                 data = response.json()
                 order = Order(
@@ -661,10 +765,13 @@ class PolymarketClient:
                 logger.error(LogMessages.ORDER_FAILED.format(
                     market_id="", reason=response.text
                 ))
+                logger.error(f"订单详情: {body}")
                 return None
-                
+
         except Exception as e:
             logger.error(LogMessages.ORDER_FAILED.format(market_id="", reason=str(e)))
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     async def cancel_order(self, order_id: str) -> bool:
