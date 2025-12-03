@@ -1,20 +1,18 @@
 """
 Polymarket API客户端
 封装CLOB API和Gamma API的调用
+使用 py_clob_client 处理 CLOB API，保留 Gamma API 的自定义实现
 """
 
 import httpx
 import asyncio
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
-import hmac
-import hashlib
-import base64
-import time
 import json
-import secrets
 
 from eth_account import Account
+from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import OrderArgs, ApiCreds, BalanceAllowanceParams, AssetType, MarketOrderArgs, OrderType
 
 from app.models import Market, MarketPrice, Order, OrderSide, OrderStatus, Balance, Position
 from app.config import config_manager
@@ -22,19 +20,13 @@ from app.utils.logger import get_logger, LogMessages
 
 logger = get_logger("polymarket")
 
-# EIP-712 相关常量
-CLOB_DOMAIN_NAME = "ClobAuthDomain"
-CLOB_VERSION = "1"
-MSG_TO_SIGN = "This message attests that I control the given wallet"
-
-# 订单相关常量
-ORDER_DOMAIN_NAME = "Polymarket CTF Exchange"
-ORDER_VERSION = "1"
-ORDER_VERIFYING_CONTRACT = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"  # Polygon mainnet
-
 
 class PolymarketClient:
-    """Polymarket API客户端"""
+    """Polymarket API客户端
+    
+    使用 py_clob_client 处理 CLOB API（交易相关）
+    保留自定义实现处理 Gamma API（市场数据）
+    """
     
     # CLOB API端点
     CLOB_HOST = "https://clob.polymarket.com"
@@ -47,235 +39,82 @@ class PolymarketClient:
     def __init__(self):
         self.config = config_manager.polymarket
         self._http_client: Optional[httpx.AsyncClient] = None
-        self._api_creds: Optional[Dict] = None
+        self._clob_client: Optional[ClobClient] = None
         self._account: Optional[Account] = None
     
     async def initialize(self):
         """初始化客户端"""
         self._http_client = httpx.AsyncClient(timeout=30.0)
         
-        # 初始化账户
+        # 初始化账户和 CLOB 客户端
         if self.config.private_key:
             self._account = Account.from_key(self.config.private_key)
             logger.info(f"钱包地址: {self._account.address}")
             
-            # 获取API凭证
-            await self._derive_api_credentials()
+            # 初始化 py_clob_client
+            try:
+                # 准备 API 凭证（如果有配置）
+                api_creds = None
+                
+                # 创建 CLOB 客户端（参考 test.py 的方式）
+                clob_kwargs = {
+                    "host": self.CLOB_HOST,
+                    "key": self.config.private_key,
+                    "chain_id": self.CHAIN_ID,
+                    "signature_type": 1,  # 1=Email/Magic；2=浏览器钱包
+                }
+                # 只有在配置了 funder 时才添加
+                if self.config.funder:
+                    clob_kwargs["funder"] = self.config.funder
+                
+                self._clob_client = ClobClient(**clob_kwargs)
+                
+                # 如果没有配置 API 凭证，立即创建/派生（参考 test.py）
+                if not api_creds:
+                    logger.info("正在创建/派生 API 凭证...")
+                    loop = asyncio.get_event_loop()
+                    derived_creds = await loop.run_in_executor(
+                        None,
+                        lambda: self._clob_client.create_or_derive_api_creds()
+                    )
+                    if derived_creds:
+                        self._clob_client.set_api_creds(derived_creds)
+                        logger.info("API 凭证已成功创建/派生")
+                    else:
+                        logger.warning("API 凭证创建/派生返回空结果")
+                
+                logger.info("CLOB 客户端初始化成功")
+            except Exception as e:
+                logger.error(f"初始化 CLOB 客户端失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
     
     async def close(self):
         """关闭客户端"""
         if self._http_client:
             await self._http_client.aclose()
     
-    def _build_eip712_domain(self) -> Dict:
-        """构建 EIP-712 Domain"""
-        return {
-            "name": CLOB_DOMAIN_NAME,
-            "version": CLOB_VERSION,
-            "chainId": self.CHAIN_ID
-        }
-    
-    def _build_clob_auth_struct(self, timestamp: int, nonce: int) -> Dict:
-        """构建 ClobAuth 结构"""
-        return {
-            "address": self._account.address,
-            "timestamp": str(timestamp),
-            "nonce": nonce,
-            "message": MSG_TO_SIGN
-        }
-    
-    def _sign_clob_auth_message(self, timestamp: int, nonce: int) -> str:
-        """
-        使用 EIP-712 签名认证消息
-        """
-        from eth_account.messages import encode_typed_data
-
-        # 构建完整的 EIP-712 消息结构
-        full_message = {
-            "types": {
-                "EIP712Domain": [
-                    {"name": "name", "type": "string"},
-                    {"name": "version", "type": "string"},
-                    {"name": "chainId", "type": "uint256"},
-                ],
-                "ClobAuth": [
-                    {"name": "address", "type": "address"},
-                    {"name": "timestamp", "type": "string"},
-                    {"name": "nonce", "type": "uint256"},
-                    {"name": "message", "type": "string"},
-                ]
-            },
-            "primaryType": "ClobAuth",
-            "domain": {
-                "name": CLOB_DOMAIN_NAME,
-                "version": CLOB_VERSION,
-                "chainId": self.CHAIN_ID
-            },
-            "message": {
-                "address": self._account.address,
-                "timestamp": str(timestamp),
-                "nonce": nonce,
-                "message": MSG_TO_SIGN
-            }
-        }
-
-        signable_message = encode_typed_data(full_message=full_message)
-        signed = self._account.sign_message(signable_message)
-        return "0x" + signed.signature.hex()
-
-    def _sign_order(self, order_data: Dict) -> str:
-        """
-        使用 EIP-712 签名订单
-
-        Args:
-            order_data: 订单数据，包含 salt, maker, signer, taker, tokenId, makerAmount, takerAmount, expiration, nonce, feeRateBps, side, signatureType
-
-        Returns:
-            签名字符串
-        """
-        from eth_account.messages import encode_typed_data
-
-        # 构建完整的 EIP-712 消息结构
-        full_message = {
-            "types": {
-                "EIP712Domain": [
-                    {"name": "name", "type": "string"},
-                    {"name": "version", "type": "string"},
-                    {"name": "chainId", "type": "uint256"},
-                    {"name": "verifyingContract", "type": "address"},
-                ],
-                "Order": [
-                    {"name": "salt", "type": "uint256"},
-                    {"name": "maker", "type": "address"},
-                    {"name": "signer", "type": "address"},
-                    {"name": "taker", "type": "address"},
-                    {"name": "tokenId", "type": "uint256"},
-                    {"name": "makerAmount", "type": "uint256"},
-                    {"name": "takerAmount", "type": "uint256"},
-                    {"name": "expiration", "type": "uint256"},
-                    {"name": "nonce", "type": "uint256"},
-                    {"name": "feeRateBps", "type": "uint256"},
-                    {"name": "side", "type": "uint8"},
-                    {"name": "signatureType", "type": "uint8"},
-                ]
-            },
-            "primaryType": "Order",
-            "domain": {
-                "name": ORDER_DOMAIN_NAME,
-                "version": ORDER_VERSION,
-                "chainId": self.CHAIN_ID,
-                "verifyingContract": ORDER_VERIFYING_CONTRACT
-            },
-            "message": order_data
-        }
-
-        signable_message = encode_typed_data(full_message=full_message)
-        signed = self._account.sign_message(signable_message)
-        return "0x" + signed.signature.hex()
-    
-    def _create_level_1_headers(self, nonce: int = 0) -> Dict[str, str]:
-        """创建 Level 1 认证头"""
-        timestamp = int(time.time())
-        signature = self._sign_clob_auth_message(timestamp, nonce)
-        
-        return {
-            "POLY_ADDRESS": self._account.address,
-            "POLY_SIGNATURE": signature,
-            "POLY_TIMESTAMP": str(timestamp),
-            "POLY_NONCE": str(nonce)
-        }
-    
-    async def _derive_api_credentials(self):
-        """派生API凭证"""
-        if not self._account:
-            return
-        
-        try:
-            # 使用 Level 1 认证头（GET 请求）
-            headers = self._create_level_1_headers(nonce=0)
-            
-            # 先尝试派生已存在的 API Key
-            response = await self._http_client.get(
-                f"{self.CLOB_HOST}/auth/derive-api-key",
-                headers=headers
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                self._api_creds = {
-                    "api_key": data.get("apiKey"),
-                    "api_secret": data.get("secret"),
-                    "api_passphrase": data.get("passphrase")
-                }
-                logger.info("API凭证获取成功（派生）")
-                return
-            
-            # 如果派生失败，尝试创建新的 API Key
-            logger.info("派生API凭证失败，尝试创建新凭证...")
-            headers = self._create_level_1_headers(nonce=0)
-            
-            response = await self._http_client.post(
-                f"{self.CLOB_HOST}/auth/api-key",
-                headers=headers
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                self._api_creds = {
-                    "api_key": data.get("apiKey"),
-                    "api_secret": data.get("secret"),
-                    "api_passphrase": data.get("passphrase")
-                }
-                logger.info("API凭证创建成功")
-            else:
-                logger.error(f"获取API凭证失败: {response.status_code} - {response.text}")
-                
-        except Exception as e:
-            logger.error(f"派生API凭证错误: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-    
-    def _get_auth_headers(self, method: str, path: str, body: str = "") -> Dict[str, str]:
-        """生成认证头"""
-        if not self._api_creds:
-            return {}
-        
-        timestamp = str(int(time.time()))
-        
-        # 创建签名
-        message = f"{timestamp}{method}{path}{body}"
-        signature = hmac.new(
-            base64.b64decode(self._api_creds["api_secret"]),
-            message.encode(),
-            hashlib.sha256
-        ).digest()
-        signature_b64 = base64.b64encode(signature).decode()
-        
-        return {
-            "POLY_ADDRESS": self._account.address if self._account else "",
-            "POLY_SIGNATURE": signature_b64,
-            "POLY_TIMESTAMP": timestamp,
-            "POLY_API_KEY": self._api_creds["api_key"],
-            "POLY_PASSPHRASE": self._api_creds["api_passphrase"]
-        }
-    
-    # ============ 市场相关 ============
+    # ============ 市场相关（使用 Gamma API） ============
     
     async def get_sport_markets(self, hours_filter: float = 1.0) -> List[Market]:
         """
         获取Sport市场列表
         
         Args:
-            hours_filter: 时间过滤（距离结算时间小于此值的市场）
+            hours_filter: 时间过滤（返回在此时间内开始或已开始的市场，比赛进行中仍可投注）
         
         Returns:
             符合条件的市场列表
         """
         try:
             # 使用 Gamma API 的 events 端点，通过 tag_slug 过滤 sport 事件
-            # 使用 end_date_min 过滤，order=endDate 按时间排序（最近的在前）
-            # 注意：end_date_min 往前推24小时，以包含正在进行或刚结束的比赛
-            min_date = (datetime.utcnow() - timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            # 查询条件：还有 hours_filter 小时内结束且活跃的体育市场
+            now = datetime.utcnow()
+            
+            # end_date_min: 往前推1小时，以包含正在进行的比赛（比赛通常持续1-2小时）
+            min_date = (now - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            # end_date_max: 限制在 hours_filter 小时内结束
+            max_date = (now + timedelta(hours=hours_filter)).strftime('%Y-%m-%dT%H:%M:%SZ')
             
             response = await self._http_client.get(
                 f"{self.GAMMA_HOST}/events",
@@ -285,7 +124,8 @@ class PolymarketClient:
                     "tag_slug": "sports",
                     "limit": 200,  # 按时间排序后不需要太大的 limit
                     "order": "endDate",  # 按结束时间排序，最近的在前
-                    "end_date_min": min_date  # 包含最近2小时内开始的比赛（正在进行中）
+                    "end_date_min": min_date,  # 包含最近1小时内开始的比赛（正在进行中）
+                    "end_date_max": max_date   # 限制在 hours_filter 小时内结束
                 }
             )
             
@@ -296,11 +136,16 @@ class PolymarketClient:
             events_data = response.json()
             markets = []
             
+            # 重新获取当前时间，因为API调用可能有延迟
             now = datetime.utcnow()
             filter_threshold = now + timedelta(hours=hours_filter)
+            # 允许正在进行中的比赛（最多1小时前开始）
+            min_allowed_date = now - timedelta(hours=1)
             
             logger.info(f"获取到 {len(events_data)} 个Sport事件")
-            logger.info(f"时间过滤: 当前时间={now.strftime('%Y-%m-%d %H:%M:%S')}, 阈值={filter_threshold.strftime('%Y-%m-%d %H:%M:%S')} (未来{hours_filter}小时)")
+            logger.info(f"时间过滤: 当前时间={now.strftime('%Y-%m-%d %H:%M:%S')}, "
+                       f"允许范围=[{min_allowed_date.strftime('%Y-%m-%d %H:%M:%S')}, "
+                       f"{filter_threshold.strftime('%Y-%m-%d %H:%M:%S')}] (未来{hours_filter}小时内结束)")
             
             # 统计被过滤的原因
             stats = {
@@ -323,12 +168,10 @@ class PolymarketClient:
                 
                 for m in event_markets:
                     stats["total_markets"] += 1
-                    market_question = m.get("question", "")
-
+                    
                     # 检查市场是否关闭
                     if m.get("closed", False):
                         stats["closed"] += 1
-                        logger.debug(f"市场已关闭: {market_question[:50]}...")
                         continue
                     
                     # 解析结束时间
@@ -340,32 +183,39 @@ class PolymarketClient:
                         except Exception as e:
                             logger.debug(f"解析日期失败: {end_date_str}, 错误: {e}")
                     
-                    # 时间过滤：保留即将结算或正在进行的市场
-                    # 注意：endDate 通常表示比赛开始/投注截止时间，不是市场关闭时间
-                    # 如果市场 closed=False，即使 endDate 已过，市场可能仍在进行中（live）
-
+                    # 时间过滤：保留即将开始或正在进行的市场
+                    # 注意：endDate 表示比赛开始时间，不是投注截止时间
+                    # 如果市场 closed=False 且 active=True，即使 endDate 已过，市场仍可投注（比赛进行中）
+                    
                     if end_date:
-                        if end_date < now:
-                            # endDate 已过，但市场未关闭，可能是正在进行的比赛
-                            # 扩大时间窗口到24小时，允许正在进行或刚结束的比赛
+                        # 检查结束时间是否在允许范围内
+                        # 允许范围：[现在-1小时, 现在+hours_filter小时]
+                        # 这样可以包含正在进行的比赛（最多1小时前开始）和即将结束的比赛（未来hours_filter小时内）
+                        if end_date < min_allowed_date:
+                            # 结束时间太早，已过期
                             hours_since_start = (now - end_date).total_seconds() / 3600
-                            if hours_since_start > 24:
-                                # 超过24小时，真正过期了
-                                stats["expired"] += 1
-                                logger.debug(f"市场已过期: {m.get('question', '')[:50]}... 开始于 {hours_since_start:.1f}小时前")
-                                continue
-                            else:
-                                # 可能正在进行中或刚结束，保留
-                                logger.debug(f"市场可能正在进行: {m.get('question', '')[:50]}... 开始于 {hours_since_start:.1f}小时前")
+                            stats["expired"] += 1
+                            logger.debug(f"市场已过期: {m.get('question', '')[:50]}... 结束于 {hours_since_start:.1f}小时前")
+                            continue
                         elif end_date > filter_threshold:
-                            # 还没到尾盘时间
+                            # 结束时间太晚，还没到尾盘时间
                             stats["too_far"] += 1
                             # 输出最近的几个市场结束时间，帮助诊断
                             if stats["too_far"] <= 3:
                                 time_diff = end_date - now
                                 hours_until = time_diff.total_seconds() / 3600
-                                logger.debug(f"市场时间过滤: {m.get('question', '')[:50]}... 开始于 {end_date.strftime('%Y-%m-%d %H:%M')} ({hours_until:.1f}小时后)")
+                                logger.debug(f"市场时间过远: {m.get('question', '')[:50]}... 结束于 {end_date.strftime('%Y-%m-%d %H:%M')} ({hours_until:.1f}小时后)")
                             continue
+                        else:
+                            # 时间在允许范围内
+                            if end_date < now:
+                                # 正在进行中的比赛
+                                hours_since_start = (now - end_date).total_seconds() / 3600
+                                logger.debug(f"市场正在进行: {m.get('question', '')[:50]}... 开始于 {hours_since_start:.1f}小时前")
+                            else:
+                                # 即将结束的比赛
+                                hours_until = (end_date - now).total_seconds() / 3600
+                                logger.debug(f"市场即将结束: {m.get('question', '')[:50]}... 还有 {hours_until:.1f}小时")
                     else:
                         # 没有结束日期的市场也跳过（除非特别配置）
                         stats["no_end_date"] += 1
@@ -481,7 +331,7 @@ class PolymarketClient:
         """
         try:
             # 使用 end_date_min 和 order=endDate 按时间排序，最近的在前
-            min_date = (datetime.utcnow() - timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            min_date = (datetime.utcnow() - timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
             
             response = await self._http_client.get(
                 f"{self.GAMMA_HOST}/events",
@@ -649,128 +499,243 @@ class PolymarketClient:
             price = market.yes_price * 100  # 转换为0-100
             if min_price <= price <= max_price:
                 filtered.append(market)
-                logger.info(f"发现符合条件市场: {market.question[:50]}... 价格: {price:.2f}")
+                logger.debug(f"发现符合条件市场: {market.question[:50]}... 价格: {price:.2f}")
         
         return filtered
     
-    # ============ 交易相关 ============
+    # ============ 交易相关（使用 py_clob_client） ============
     
-    async def place_order(self, token_id: str, side: OrderSide, price: float,
-                         amount: float) -> Optional[Order]:
+    async def place_order(self, token_id: str, side: OrderSide, price: float, 
+                         amount: float, market_order: bool = False) -> Optional[Order]:
         """
-        下单
-
+        下单（使用 py_clob_client）
+        
         Args:
             token_id: Token ID
             side: 买卖方向
-            price: 价格（0-100）
+            price: 价格（0-100），市价订单时会被忽略
             amount: 金额（USDC）
-
+            market_order: 是否为市价订单（True=市价，False=限价）
+        
         Returns:
             订单对象
         """
-        if not self._api_creds or not self._account:
-            logger.error("未初始化API凭证，无法下单")
+        if not self._clob_client:
+            logger.error("CLOB 客户端未初始化，无法下单")
             return None
-
+        
         try:
-            # 将价格转换为0-1范围
-            price_decimal = price / 100
-
-            # 计算数量（以wei为单位，Polymarket使用6位小数的USDC）
-            size = amount / price_decimal
-            size_in_decimals = int(size * 1_000_000)  # 转换为6位小数的整数
-
-            # 计算maker和taker的数量
-            # BUY: makerAmount是要支付的USDC，takerAmount是要获得的token
-            # SELL: makerAmount是要卖出的token，takerAmount是要获得的USDC
-            if side == OrderSide.BUY:
-                maker_amount = str(int(amount * 1_000_000))  # USDC数量（6位小数）
-                taker_amount = str(size_in_decimals)  # token数量（6位小数）
-                side_value = 0  # BUY = 0
-            else:
-                maker_amount = str(size_in_decimals)  # token数量（6位小数）
-                taker_amount = str(int(amount * 1_000_000))  # USDC数量（6位小数）
-                side_value = 1  # SELL = 1
-
-            # 生成订单参数
-            salt = secrets.randbits(256)  # 随机salt
-            current_time = int(time.time())
-            expiration = current_time + (30 * 24 * 60 * 60)  # 30天后过期
-
-            # 构建订单数据（用于签名）
-            order_struct = {
-                "salt": salt,
-                "maker": self._account.address,
-                "signer": self._account.address,
-                "taker": "0x0000000000000000000000000000000000000000",  # 公开订单
-                "tokenId": int(token_id),
-                "makerAmount": maker_amount,
-                "takerAmount": taker_amount,
-                "expiration": expiration,
-                "nonce": 0,
-                "feeRateBps": 0,  # 默认手续费率
-                "side": side_value,
-                "signatureType": 0,  # EOA签名
-            }
-
-            # 签名订单
-            signature = self._sign_order(order_struct)
-
-            # 构建提交到API的订单
-            signed_order = {
-                "salt": str(salt),
-                "maker": self._account.address,
-                "signer": self._account.address,
-                "taker": "0x0000000000000000000000000000000000000000",
-                "tokenId": token_id,
-                "makerAmount": maker_amount,
-                "takerAmount": taker_amount,
-                "expiration": str(expiration),
-                "nonce": "0",
-                "feeRateBps": "0",
-                "side": "BUY" if side == OrderSide.BUY else "SELL",
-                "signatureType": "0",
-                "signature": signature,
-            }
-
-            body = json.dumps(signed_order)
-            path = "/order"
-            headers = self._get_auth_headers("POST", path, body)
-            headers["Content-Type"] = "application/json"
-
-            logger.info(f"提交订单: {side.value} {size:.2f} @ {price:.4f} (token_id: {token_id})")
-            logger.debug(f"订单签名: {signature[:20]}...")
-
-            response = await self._http_client.post(
-                f"{self.CLOB_HOST}{path}",
-                content=body,
-                headers=headers
-            )
-
-            if response.status_code in [200, 201]:
-                data = response.json()
-                order = Order(
-                    id=data.get("orderID", data.get("id", "")),
-                    market_id=data.get("market", ""),
-                    token_id=token_id,
-                    side=side,
-                    price=price,
-                    size=size,
-                    amount=amount,
-                    status=OrderStatus.OPEN
-                )
-                logger.info(LogMessages.ORDER_SUCCESS.format(
-                    order_id=order.id, market_id=order.market_id
-                ))
-                return order
-            else:
-                logger.error(LogMessages.ORDER_FAILED.format(
-                    market_id="", reason=response.text
-                ))
-                logger.error(f"订单详情: {body}")
+            # 验证输入参数
+            if not token_id:
+                logger.error("token_id 不能为空")
                 return None
-
+            
+            if amount <= 0:
+                logger.error(f"金额无效: {amount} (应大于 0)")
+                return None
+            
+            loop = asyncio.get_event_loop()
+            
+            if market_order:
+                # 市价订单
+                logger.debug(f"市价订单 - tokenID: {str(token_id)[:20]}..., amount: {amount}, side: {side.value}")
+                
+                # 创建市价订单参数
+                # 市价订单使用 amount（金额），price 不设置或设为 0，系统会自动计算市场价格
+                market_order_args = MarketOrderArgs(
+                    token_id=str(token_id),
+                    amount=amount,
+                    side=side.value.upper(),
+                    price=0,  # 设为 0，create_market_order 会自动计算市场价格
+                    order_type=OrderType.FOK  # Fill or Kill
+                )
+                
+                # 创建市价订单（返回 SignedOrder）
+                # create_market_order 会自动计算市场价格并创建签名订单
+                signed_order = await loop.run_in_executor(
+                    None,
+                    lambda: self._clob_client.create_market_order(market_order_args)
+                )
+                
+                # 从 SignedOrder 中获取订单信息
+                order_data = signed_order.order
+                
+                # 获取订单信息（使用 dict() 方法或直接访问属性）
+                if hasattr(order_data, 'dict'):
+                    order_dict = order_data.dict()
+                elif hasattr(order_data, '__dict__'):
+                    order_dict = order_data.__dict__
+                else:
+                    # 尝试直接访问属性
+                    order_dict = {
+                        'token_id': getattr(order_data, 'token_id', token_id),
+                        'price': getattr(order_data, 'price', 0),
+                        'size': getattr(order_data, 'size', 0),
+                        'side': getattr(order_data, 'side', side.value.upper()),
+                    }
+                
+                # 获取价格（已经是0-1范围   ，需要转换为0-100）
+                actual_price = float(order_dict.get('price', 0)) * 100
+                actual_size = float(order_dict.get('size', 0))
+                
+                # 提交订单
+                # 注意：post_order 可能需要 Order 对象而不是 SignedOrder
+                # 但根据文档，应该传递 SignedOrder 对象
+                # 如果签名错误，可能需要使用 signed_order.order
+                try:
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: self._clob_client.post_order(signed_order, orderType=OrderType.FOK)
+                    )
+                except Exception as post_error:
+                    # 如果使用 SignedOrder 失败，尝试使用 order 属性
+                    error_msg = str(post_error)
+                    if "signature" in error_msg.lower() or "invalid" in error_msg.lower():
+                        logger.warning(f"使用 SignedOrder 提交失败，尝试使用 order 属性: {error_msg}")
+                        response = await loop.run_in_executor(
+                            None,
+                            lambda: self._clob_client.post_order(signed_order.order, orderType=OrderType.FOK)
+                        )
+                    else:
+                        raise
+                
+                # 处理提交响应
+                if response:
+                    # 响应可能是字典格式
+                    if isinstance(response, dict):
+                        if response.get("status") in ["success", "ok"]:
+                            data = response.get("data", response)
+                        elif "error" in response:
+                            error_msg = response.get("error", response.get("message", "未知错误"))
+                            logger.error(f"市价订单提交失败: {error_msg}")
+                            return None
+                        else:
+                            data = response
+                        
+                        # 从响应中获取订单ID
+                        order_id = str(data.get("orderID", data.get("id", "")))
+                        if not order_id:
+                            # 如果没有ID，使用订单数据中的信息生成
+                            import uuid
+                            order_id = str(uuid.uuid4())
+                        
+                        # 如果响应中有实际成交信息，使用响应中的数据
+                        if data.get("price") or data.get("avgPrice"):
+                            actual_price = float(data.get("price", data.get("avgPrice", 0))) * 100
+                        if data.get("size") or data.get("filledSize"):
+                            actual_size = float(data.get("size", data.get("filledSize", 0)))
+                        
+                        # 计算实际金额
+                        actual_amount = actual_size * actual_price / 100 if actual_price > 0 else amount
+                        
+                        order = Order(
+                            id=order_id,
+                            market_id=str(data.get("market", "")),
+                            token_id=token_id,
+                            side=side,
+                            price=actual_price if actual_price > 0 else price,
+                            size=actual_size if actual_size > 0 else (amount / (price / 100) if price > 0 else 0),
+                            amount=actual_amount if actual_amount > 0 else amount,
+                            status=OrderStatus.OPEN
+                        )
+                        logger.debug(f"市价订单成功 - 订单ID: {order.id}, 成交价格: {actual_price:.2f}¢, 数量: {actual_size:.4f}")
+                        return order
+                    else:
+                        # 如果响应不是字典，使用从订单数据中获取的信息
+                        import uuid
+                        order_id = str(uuid.uuid4())
+                        actual_amount = actual_size * actual_price / 100 if actual_price > 0 else amount
+                        
+                        order = Order(
+                            id=order_id,
+                            market_id="",
+                            token_id=token_id,
+                            side=side,
+                            price=actual_price if actual_price > 0 else price,
+                            size=actual_size if actual_size > 0 else (amount / (price / 100) if price > 0 else 0),
+                            amount=actual_amount if actual_amount > 0 else amount,
+                            status=OrderStatus.OPEN
+                        )
+                        logger.debug(f"市价订单成功 - 订单ID: {order.id}, 成交价格: {actual_price:.2f}¢, 数量: {actual_size:.4f}")
+                        return order
+                else:
+                    logger.error("市价订单提交失败: 无响应")
+                    return None
+            else:
+                # 限价订单
+                if price <= 0 or price >= 100:
+                    logger.error(f"价格无效: {price} (应在 0-100 之间)")
+                    return None
+                
+                # 将价格转换为0-1范围
+                price_decimal = price / 100
+                
+                # 验证价格范围
+                if price_decimal <= 0 or price_decimal >= 1:
+                    logger.error(f"价格超出范围: {price_decimal} (应在 0-1 之间)")
+                    return None
+                
+                # 计算数量
+                size = amount / price_decimal
+                
+                if size <= 0:
+                    logger.error(f"计算出的数量无效: {size}")
+                    return None
+                
+                # 创建限价订单参数
+                order_args = OrderArgs(
+                    token_id=str(token_id),
+                    price=price_decimal,
+                    size=size,
+                    side=side.value.upper()
+                )
+                
+                logger.debug(f"限价订单 - tokenID: {str(token_id)[:20]}..., price: {price_decimal}, size: {size}, side: {side.value}")
+                
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: self._clob_client.create_and_post_order(order_args)
+                )
+                
+                # 处理响应（py_clob_client 可能返回不同的格式）
+                if response:
+                    # 检查响应格式
+                    if isinstance(response, dict):
+                        # 如果响应包含 status 字段
+                        if response.get("status") in ["success", "ok"]:
+                            data = response.get("data", response)
+                        elif "error" in response:
+                            error_msg = response.get("error", response.get("message", "未知错误"))
+                            logger.error(f"限价订单失败: {error_msg}")
+                            logger.error(f"订单参数: {order_args}")
+                            return None
+                        else:
+                            # 直接是订单数据
+                            data = response
+                    else:
+                        # 响应可能直接是订单数据
+                        data = response
+                    
+                    # 构建订单对象
+                    order = Order(
+                        id=str(data.get("orderID", data.get("id", ""))),
+                        market_id=str(data.get("market", "")),
+                        token_id=token_id,
+                        side=side,
+                        price=price,
+                        size=size,
+                        amount=amount,
+                        status=OrderStatus.OPEN
+                    )
+                    logger.debug(LogMessages.ORDER_SUCCESS.format(
+                        order_id=order.id, market_id=order.market_id
+                    ))
+                    return order
+                else:
+                    logger.error("限价订单失败: 无响应")
+                    logger.error(f"订单参数: {order_args}")
+                    return None
+                
         except Exception as e:
             logger.error(LogMessages.ORDER_FAILED.format(market_id="", reason=str(e)))
             import traceback
@@ -778,116 +743,211 @@ class PolymarketClient:
             return None
     
     async def cancel_order(self, order_id: str) -> bool:
-        """取消订单"""
-        if not self._api_creds:
+        """取消订单（使用 py_clob_client）"""
+        if not self._clob_client:
             return False
         
         try:
-            path = f"/order/{order_id}"
-            headers = self._get_auth_headers("DELETE", path)
-            
-            response = await self._http_client.delete(
-                f"{self.CLOB_HOST}{path}",
-                headers=headers
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._clob_client.cancel(order_id)
             )
             
-            if response.status_code == 200:
-                logger.info(LogMessages.ORDER_CANCELLED.format(order_id=order_id))
-                return True
+            # 处理响应
+            if response:
+                if isinstance(response, dict):
+                    status = response.get("status", "")
+                    if status in ["success", "ok"] or "orderID" in response or "id" in response:
+                        logger.debug(LogMessages.ORDER_CANCELLED.format(order_id=order_id))
+                        return True
+                else:
+                    # 如果响应不是字典，可能直接成功
+                    logger.debug(LogMessages.ORDER_CANCELLED.format(order_id=order_id))
+                    return True
             return False
             
         except Exception as e:
             logger.error(f"取消订单失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     async def get_open_orders(self) -> List[Dict]:
-        """获取挂单"""
-        if not self._api_creds or not self._account:
+        """获取挂单（使用 py_clob_client）"""
+        if not self._clob_client or not self._account:
             return []
         
         try:
-            path = "/orders"
-            headers = self._get_auth_headers("GET", path)
+            from py_clob_client.clob_types import OpenOrderParams
             
-            response = await self._http_client.get(
-                f"{self.CLOB_HOST}{path}",
-                params={"owner": self._account.address},
-                headers=headers
+            # 创建查询参数（可选，不传参数会获取所有订单）
+            params = OpenOrderParams()
+            
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._clob_client.get_orders(params)
             )
             
-            if response.status_code == 200:
-                return response.json()
+            if response:
+                if isinstance(response, dict):
+                    return response.get("data", response.get("orders", []))
+                elif isinstance(response, list):
+                    return response
             return []
             
         except Exception as e:
             logger.error(f"获取挂单失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
     
-    # ============ 账户相关 ============
+    # ============ 账户相关（使用 py_clob_client） ============
     
     async def get_balance(self) -> Balance:
-        """获取账户余额"""
-        if not self._account:
+        """获取账户余额（使用 py_clob_client 的 get_balance_allowance 方法）"""
+        if not self._account or not self._clob_client:
             return Balance()
         
-        try:
-            # 获取USDC余额
-            # Polymarket使用Polygon上的USDC
-            response = await self._http_client.get(
-                f"{self.CLOB_HOST}/balance",
-                params={"address": self._account.address}
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                available = float(data.get("available", 0))
-                locked = float(data.get("locked", 0))
-                return Balance(
-                    available=available,
-                    locked=locked,
-                    total=available + locked
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # 使用 py_clob_client 的 get_balance_allowance 方法
+                # 这个方法需要 Level 2 认证，返回余额和授权信息
+                # 参考 test.py，使用 AssetType.COLLATERAL
+                params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: self._clob_client.get_balance_allowance(params=params)
                 )
-            
-            return Balance()
-            
-        except Exception as e:
-            logger.error(f"获取余额失败: {e}")
-            return Balance()
+                
+                if result:
+                    # USDC 有 6 位小数，需要除以 10^6 转换为实际金额
+                    USDC_DECIMALS = 10 ** 6
+                    
+                    # 解析返回的数据
+                    if isinstance(result, dict):
+                        # 尝试不同的字段名
+                        # 原始值（以最小单位返回，如 28439549 表示 $28.439549）
+                        balance_raw = float(result.get("balance", result.get("available", result.get("free", 0))))
+                        allowance_raw = float(result.get("allowance", result.get("locked", result.get("reserved", 0))))
+                        
+                        # 转换为实际 USDC 金额（除以 10^6）
+                        balance = balance_raw / USDC_DECIMALS
+                        allowance = allowance_raw / USDC_DECIMALS
+                        available = balance - allowance if balance >= allowance else balance
+                        
+                        logger.debug(f"余额原始值: balance={balance_raw}, allowance={allowance_raw}, 换算后: balance=${balance:.2f}, allowance=${allowance:.2f}")
+                        
+                        return Balance(
+                            available=available,
+                            locked=allowance,
+                            total=balance
+                        )
+                    elif isinstance(result, (int, float)):
+                        # 如果直接返回数字，也需要换算
+                        balance_raw = float(result)
+                        balance = balance_raw / USDC_DECIMALS
+                        
+                        logger.debug(f"余额原始值: {balance_raw}, 换算后: ${balance:.2f}")
+                        
+                        return Balance(
+                            available=balance,
+                            locked=0,
+                            total=balance
+                        )
+                
+                logger.warning(f"get_balance_allowance 返回空结果")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1 * (attempt + 1))
+                    continue
+                
+                return Balance()
+                
+            except Exception as e:
+                error_msg = str(e)
+                # 如果是认证错误，记录但不重试
+                if "auth" in error_msg.lower() or "unauthorized" in error_msg.lower() or "401" in error_msg:
+                    logger.error(f"获取余额失败: 认证错误 - {e}")
+                    return Balance()
+                
+                logger.warning(f"获取余额失败: {e} (尝试 {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                else:
+                    logger.error(f"获取余额失败: 重试 {max_retries} 次后仍然失败")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    return Balance()
+        
+        return Balance()
     
     async def get_positions(self) -> List[Position]:
-        """获取持仓"""
+        """获取持仓（使用原始 API 调用）"""
         if not self._account:
             return []
         
-        try:
-            response = await self._http_client.get(
-                f"{self.CLOB_HOST}/positions",
-                params={"address": self._account.address}
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                positions = []
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # py_clob_client 可能没有 get_positions 方法，使用原始 API 调用
+                response = await self._http_client.get(
+                    f"{self.CLOB_HOST}/positions",
+                    params={"address": self._account.address},
+                    timeout=30.0
+                )
                 
-                for p in data:
-                    size = float(p.get("size", 0))
-                    if size > 0:
-                        positions.append(Position(
-                            id=p.get("id", ""),
-                            market_id=p.get("market", ""),
-                            token_id=p.get("tokenId", ""),
-                            size=size,
-                            avg_price=float(p.get("avgPrice", 0)) * 100,
-                            current_price=float(p.get("currentPrice", 0)) * 100
-                        ))
+                positions = []
+                if response.status_code == 200:
+                    data = response.json()
+                    if isinstance(data, list):
+                        for p in data:
+                            size = float(p.get("size", 0))
+                            if size > 0:
+                                positions.append(Position(
+                                    id=p.get("id", ""),
+                                    market_id=p.get("market", ""),
+                                    token_id=p.get("tokenId", ""),
+                                    size=size,
+                                    avg_price=float(p.get("avgPrice", 0)) * 100,
+                                    current_price=float(p.get("currentPrice", 0)) * 100
+                                ))
+                    elif isinstance(data, dict):
+                        # 如果返回的是字典格式
+                        pos_list = data.get("data", data.get("positions", []))
+                        for p in pos_list:
+                            size = float(p.get("size", 0))
+                            if size > 0:
+                                positions.append(Position(
+                                    id=p.get("id", ""),
+                                    market_id=p.get("market", ""),
+                                    token_id=p.get("tokenId", ""),
+                                    size=size,
+                                    avg_price=float(p.get("avgPrice", 0)) * 100,
+                                    current_price=float(p.get("currentPrice", 0)) * 100
+                                ))
                 
                 return positions
-            
-            return []
-            
-        except Exception as e:
-            logger.error(f"获取持仓失败: {e}")
-            return []
+                
+            except (httpx.ConnectError, httpx.TimeoutException) as e:
+                error_type = "连接错误" if isinstance(e, httpx.ConnectError) else "超时错误"
+                logger.warning(f"获取持仓失败 ({error_type}): {e} (尝试 {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 * (attempt + 1))  # 递增延迟
+                    continue
+                else:
+                    logger.error(f"获取持仓失败: 重试 {max_retries} 次后仍然失败")
+                    return []
+            except Exception as e:
+                logger.error(f"获取持仓失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return []
+        
+        return []
     
     @property
     def wallet_address(self) -> str:
