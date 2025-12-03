@@ -50,7 +50,7 @@ class Market(BaseModel):
     
     # 市场信息
     category: str = Field(default="", description="分类")
-    end_date: Optional[datetime] = Field(default=None, description="结算时间")
+    end_date: Optional[datetime] = Field(default=None, description="比赛开始时间")
     volume: float = Field(default=0, description="交易量")
     liquidity: float = Field(default=0, description="流动性")
     
@@ -61,7 +61,7 @@ class Market(BaseModel):
     # 计算属性
     @property
     def hours_to_end(self) -> Optional[float]:
-        """距离结算还有多少小时"""
+        """距离比赛开始还有多少小时（负数表示已开始）"""
         if self.end_date:
             delta = self.end_date - datetime.utcnow()
             return delta.total_seconds() / 3600
