@@ -57,13 +57,13 @@ class PolymarketClient:
                 api_creds = None
                 
                 # 创建 CLOB 客户端（参考 test.py 的方式）
-                # signature_type: 0=EOA, 1=POLY_GNOSIS_SAFE, 2=POLY_PROXY
-                # 对于标准私钥，使用 0 或 2
+                # signature_type: 0=EOA, 1=POLY_GNOSIS_SAFE (Email/Magic), 2=POLY_PROXY
+                # 邮箱类型使用 1=POLY_GNOSIS_SAFE
                 clob_kwargs = {
                     "host": self.CLOB_HOST,
                     "key": self.config.private_key,
                     "chain_id": self.CHAIN_ID,
-                    "signature_type": 2,  # 2=POLY_PROXY (推荐用于标准私钥)
+                    "signature_type": 1,  # 1=POLY_GNOSIS_SAFE (Email/Magic登录)
                 }
                 # 只有在配置了 funder 时才添加
                 if self.config.funder:
