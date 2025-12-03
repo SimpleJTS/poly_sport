@@ -17,10 +17,8 @@ load_dotenv()
 
 class PolymarketConfig(BaseModel):
     """Polymarket API配置"""
-    api_key: str = Field(default="", description="API Key")
-    api_secret: str = Field(default="", description="API Secret")
-    api_passphrase: str = Field(default="", description="API Passphrase")
     private_key: str = Field(default="", description="钱包私钥")
+    funder: str = Field(default="", description="资金持有者地址")
     
     # API端点
     host: str = Field(default="https://clob.polymarket.com", description="CLOB API地址")
@@ -89,10 +87,8 @@ class ConfigManager:
         # 初始化配置
         self.app = AppConfig()
         self.polymarket = PolymarketConfig(
-            api_key=os.getenv("POLY_API_KEY", ""),
-            api_secret=os.getenv("POLY_API_SECRET", ""),
-            api_passphrase=os.getenv("POLY_API_PASSPHRASE", ""),
-            private_key=os.getenv("POLY_PRIVATE_KEY", "")
+            private_key=os.getenv("POLY_PRIVATE_KEY", ""),
+            funder=os.getenv("POLY_FUNDER", "")
         )
         self.telegram = TelegramConfig(
             enabled=bool(os.getenv("TG_BOT_TOKEN")),
