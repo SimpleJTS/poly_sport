@@ -57,16 +57,18 @@ class PolymarketClient:
                 api_creds = None
                 
                 # 创建 CLOB 客户端（参考 test.py 的方式）
+                # signature_type: 0=EOA, 1=POLY_GNOSIS_SAFE (Email/Magic), 2=POLY_PROXY
+                # 邮箱类型使用 1=POLY_GNOSIS_SAFE
                 clob_kwargs = {
                     "host": self.CLOB_HOST,
                     "key": self.config.private_key,
                     "chain_id": self.CHAIN_ID,
-                    "signature_type": 1,  # 1=Email/Magic；2=浏览器钱包
+                    "signature_type": 1,  # 1=POLY_GNOSIS_SAFE (Email/Magic登录)
                 }
                 # 只有在配置了 funder 时才添加
                 if self.config.funder:
                     clob_kwargs["funder"] = self.config.funder
-                
+
                 self._clob_client = ClobClient(**clob_kwargs)
                 
                 # 如果没有配置 API 凭证，立即创建/派生（参考 test.py）
@@ -666,22 +668,22 @@ class PolymarketClient:
                 if price <= 0 or price >= 100:
                     logger.error(f"价格无效: {price} (应在 0-100 之间)")
                     return None
-                
+
                 # 将价格转换为0-1范围
                 price_decimal = price / 100
-                
+
                 # 验证价格范围
                 if price_decimal <= 0 or price_decimal >= 1:
                     logger.error(f"价格超出范围: {price_decimal} (应在 0-1 之间)")
                     return None
-                
+
                 # 计算数量
                 size = amount / price_decimal
-                
+
                 if size <= 0:
                     logger.error(f"计算出的数量无效: {size}")
                     return None
-                
+
                 # 创建限价订单参数
                 order_args = OrderArgs(
                     token_id=str(token_id),
@@ -689,14 +691,42 @@ class PolymarketClient:
                     size=size,
                     side=side.value.upper()
                 )
-                
+
                 logger.debug(f"限价订单 - tokenID: {str(token_id)[:20]}..., price: {price_decimal}, size: {size}, side: {side.value}")
-                
-                response = await loop.run_in_executor(
+
+                # 分步骤创建和提交订单（避免签名错误）
+                # 第1步：创建签名订单
+                signed_order = await loop.run_in_executor(
                     None,
-                    lambda: self._clob_client.create_and_post_order(order_args)
+                    lambda: self._clob_client.create_order(order_args)
                 )
-                
+
+                if not signed_order:
+                    logger.error("创建签名订单失败")
+                    return None
+
+                # 第2步：提交订单
+                try:
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: self._clob_client.post_order(signed_order, orderType=OrderType.GTC)
+                    )
+                except Exception as post_error:
+                    # 如果使用 SignedOrder 失败，尝试使用 order 属性
+                    error_msg = str(post_error)
+                    if "signature" in error_msg.lower() or "invalid" in error_msg.lower():
+                        logger.warning(f"使用 SignedOrder 提交失败，尝试使用 order 属性: {error_msg}")
+                        try:
+                            response = await loop.run_in_executor(
+                                None,
+                                lambda: self._clob_client.post_order(signed_order.order, orderType=OrderType.GTC)
+                            )
+                        except Exception as e2:
+                            logger.error(f"使用 order 属性提交也失败: {e2}")
+                            raise post_error
+                    else:
+                        raise
+
                 # 处理响应（py_clob_client 可能返回不同的格式）
                 if response:
                     # 检查响应格式
@@ -715,7 +745,7 @@ class PolymarketClient:
                     else:
                         # 响应可能直接是订单数据
                         data = response
-                    
+
                     # 构建订单对象
                     order = Order(
                         id=str(data.get("orderID", data.get("id", ""))),
