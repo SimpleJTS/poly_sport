@@ -386,29 +386,6 @@
             background: var(--bg-tertiary);
         }
 
-        .market-table th.sortable {
-            cursor: pointer;
-            user-select: none;
-            transition: all 0.2s ease;
-        }
-
-        .market-table th.sortable:hover {
-            color: var(--text-primary);
-            background: var(--bg-hover);
-        }
-
-        .sort-indicator {
-            display: inline-block;
-            margin-left: 4px;
-            font-size: 0.7rem;
-            opacity: 0.5;
-        }
-
-        .sort-indicator.active {
-            opacity: 1;
-            color: var(--accent-green);
-        }
-
         .market-table td {
             padding: 12px 16px;
             font-size: 0.875rem;
@@ -449,6 +426,24 @@
         .price-badge.low {
             background: rgba(255, 71, 87, 0.15);
             color: var(--accent-red);
+        }
+
+        .price-change {
+            display: inline-block;
+            font-weight: 600;
+            font-size: 0.75rem;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+
+        .price-change.up {
+            color: var(--accent-green);
+            background: rgba(0, 255, 136, 0.15);
+        }
+
+        .price-change.down {
+            color: var(--accent-red);
+            background: rgba(255, 71, 87, 0.15);
         }
 
         /* Position Card */
@@ -667,27 +662,35 @@
                 <div class="card" style="margin-bottom: 24px;">
                     <div class="card-header">
                         <span class="card-title">🏆 Sport市场</span>
-                        <button class="btn btn-secondary btn-sm" @click="scanMarkets">
-                            扫描市场
-                        </button>
+                        <div style="display: flex; gap: 8px;">
+                            <button class="btn btn-secondary btn-sm" @click="updateMarketPrices" title="刷新价格">
+                                🔄 刷新价格
+                            </button>
+                            <button class="btn btn-secondary btn-sm" @click="scanMarkets">
+                                扫描市场
+                            </button>
+                        </div>
                     </div>
                     <div v-if="markets.length > 0">
+                        <div style="padding: 12px 16px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: var(--bg-tertiary);">
+                            <span style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;">排序方式：</span>
+                            <div style="display: flex; gap: 8px;">
+                                <button :class="['btn', 'btn-sm', sortBy === 'time' ? 'btn-primary' : 'btn-secondary']"
+                                        @click="sortBy = 'time'; sortMarkets()">
+                                    按时间
+                                </button>
+                                <button :class="['btn', 'btn-sm', sortBy === 'price' ? 'btn-primary' : 'btn-secondary']"
+                                        @click="sortBy = 'price'; sortMarkets()">
+                                    按价格
+                                </button>
+                            </div>
+                        </div>
                         <table class="market-table">
                             <thead>
                                 <tr>
                                     <th>市场</th>
-                                    <th class="sortable" @click="sortMarkets('price')">
-                                        价格
-                                        <span :class="['sort-indicator', sortBy === 'price' && 'active']">
-                                            {{ sortBy === 'price' ? (sortOrder === 'asc' ? '↑' : '↓') : '↕' }}
-                                        </span>
-                                    </th>
-                                    <th class="sortable" @click="sortMarkets('time')">
-                                        结算时间
-                                        <span :class="['sort-indicator', sortBy === 'time' && 'active']">
-                                            {{ sortBy === 'time' ? (sortOrder === 'asc' ? '↑' : '↓') : '↕' }}
-                                        </span>
-                                    </th>
+                                    <th>价格</th>
+                                    <th>比赛时间</th>
                                     <th>操作</th>
                                 </tr>
                             </thead>
@@ -700,14 +703,29 @@
                                         <span :class="['price-badge', getPriceClass(market.yes_price * 100)]">
                                             {{ (market.yes_price * 100).toFixed(1) }}¢
                                         </span>
+                                        <span v-if="lastPriceUpdate[market.id] && Math.abs(lastPriceUpdate[market.id] - market.yes_price * 100) > 0.1" 
+                                              :class="['price-change', 
+                                                       (market.yes_price * 100 - lastPriceUpdate[market.id]) > 0 ? 'up' : 'down']"
+                                              style="font-size: 0.75rem; margin-left: 4px;"
+                                              :title="`价格变化: ${lastPriceUpdate[market.id].toFixed(1)}¢ → ${(market.yes_price * 100).toFixed(1)}¢`">
+                                            {{ (market.yes_price * 100 - lastPriceUpdate[market.id]) > 0 ? '↑' : '↓' }}
+                                        </span>
                                     </td>
                                     <td>{{ formatEndDate(market.end_date) }}</td>
                                     <td>
-                                        <button class="btn btn-primary btn-sm" 
-                                                @click="buyMarket(market)"
-                                                :disabled="!status.is_running">
-                                            买入
-                                        </button>
+                                        <div style="display: flex; gap: 4px; align-items: center;">
+                                            <button class="btn btn-primary btn-sm" 
+                                                    @click="buyMarket(market, false)"
+                                                    :title="!status.is_running ? '系统未运行，点击仍可买入（限价）' : '限价买入'">
+                                                限价
+                                            </button>
+                                            <button class="btn btn-secondary btn-sm" 
+                                                    @click="buyMarket(market, true)"
+                                                    :title="!status.is_running ? '系统未运行，点击仍可买入（市价）' : '市价买入'"
+                                                    style="background: var(--accent-blue); color: white;">
+                                                市价
+                                            </button>
+                                        </div>
                                     </td>
                                 </tr>
                             </tbody>
@@ -813,7 +831,7 @@
                                 <input type="number" class="form-input" 
                                        v-model.number="tradingConfig.time_filter_hours"
                                        min="0.1" step="0.1">
-                                <div class="form-hint">结算前X小时内的市场</div>
+                                <div class="form-hint">比赛开始前X小时内或已开始的市场</div>
                             </div>
                             <div class="form-group">
                                 <label class="form-label">扫描间隔 (秒)</label>
@@ -904,7 +922,7 @@
     </div>
 
     <script>
-        const { createApp, ref, reactive, onMounted, computed } = Vue;
+        const { createApp, ref, reactive, onMounted } = Vue;
 
         createApp({
             setup() {
@@ -941,13 +959,13 @@
                     chat_id: ''
                 });
                 const markets = ref([]);
+                const sortedMarkets = ref([]);
+                const sortBy = ref('time'); // 'time' 或 'price'
                 const positions = ref([]);
                 const logs = ref([]);
                 const toast = reactive({ show: false, message: '', type: 'success' });
-
-                // Sorting state
-                const sortBy = ref('price');  // 'price' or 'time'
-                const sortOrder = ref('desc');  // 'asc' or 'desc'
+                const priceUpdateInterval = ref(null); // 价格更新定时器
+                const lastPriceUpdate = ref({}); // 存储每个市场的上次价格，用于检测变化
 
                 // Methods
                 const showToast = (message, type = 'success') => {
@@ -1026,6 +1044,18 @@
                     }
                 };
 
+                const sortMarkets = () => {
+                    if (sortBy.value === 'price') {
+                        // 按价格从大到小排序
+                        sortedMarkets.value = [...markets.value].sort((a, b) => {
+                            return (b.yes_price * 100) - (a.yes_price * 100);
+                        });
+                    } else {
+                        // 按时间排序（默认，从API返回的顺序）
+                        sortedMarkets.value = [...markets.value];
+                    }
+                };
+
                 const scanMarkets = async () => {
                     try {
                         addLog('正在扫描Sport市场...', 'info');
@@ -1033,6 +1063,7 @@
                         const data = await res.json();
                         if (data.success) {
                             markets.value = data.data.markets;
+                            sortMarkets(); // 应用当前排序
                             addLog(`扫描完成，发现 ${data.data.count} 个市场`, 'success');
                         }
                     } catch (e) {
@@ -1126,39 +1157,167 @@
                     }
                 };
 
-                const buyMarket = async (market) => {
-                    if (!confirm(`确认买入 "${market.question.substring(0, 50)}..." ?`)) return;
+                // 获取市场实时价格
+                const fetchMarketPrice = async (tokenId) => {
                     try {
-                        const res = await fetch(`${API_BASE}/trade/buy?market_id=${market.id}&token_id=${market.token_id}&price=${market.yes_price * 100}&amount=${tradingConfig.order_amount}&market_question=${encodeURIComponent(market.question)}`, {
-                            method: 'POST'
-                        });
-                        const data = await res.json();
-                        if (data.success) {
-                            showToast('买入订单已提交');
-                            addLog(`买入: ${market.question.substring(0, 30)}...`, 'success');
-                            await fetchPositions();
-                        } else {
-                            showToast('买入失败', 'error');
+                        const res = await fetch(`${API_BASE}/markets/${tokenId}/price`);
+                        if (res.ok) {
+                            const data = await res.json();
+                            if (data.success) {
+                                return data.data.price; // 返回价格（0-100）
+                            }
                         }
                     } catch (e) {
-                        showToast('买入失败', 'error');
+                        console.error('获取价格失败:', e);
+                    }
+                    return null;
+                };
+
+                // 更新市场列表中的实时价格
+                const updateMarketPrices = async () => {
+                    if (markets.value.length === 0) return;
+                    
+                    for (let market of markets.value) {
+                        try {
+                            const currentPrice = await fetchMarketPrice(market.token_id);
+                            if (currentPrice !== null) {
+                                const oldPrice = market.yes_price * 100;
+                                market.yes_price = currentPrice / 100;
+                                
+                                // 检测价格变化
+                                const priceDiff = currentPrice - oldPrice;
+                                if (Math.abs(priceDiff) > 0.5) { // 价格变化超过0.5¢
+                                    const change = priceDiff > 0 ? '↑' : '↓';
+                                    addLog(`价格更新: ${market.question.substring(0, 30)}... ${oldPrice.toFixed(1)}¢ ${change} ${currentPrice.toFixed(1)}¢`, 'info');
+                                }
+                                
+                                // 保存上次价格用于显示变化指示器
+                                if (!lastPriceUpdate.value[market.id]) {
+                                    lastPriceUpdate.value[market.id] = oldPrice;
+                                }
+                            }
+                        } catch (e) {
+                            console.error(`更新价格失败 ${market.id}:`, e);
+                        }
+                    }
+                    
+                    // 重新排序
+                    sortMarkets();
+                };
+
+                const buyMarket = async (market, isMarketOrder = false) => {
+                    // 检查系统是否运行
+                    if (!status.is_running) {
+                        if (!confirm('系统未运行，是否仍要继续买入？')) return;
+                    }
+                    
+                    const orderType = isMarketOrder ? '市价' : '限价';
+                    
+                    // 获取最新价格
+                    addLog(`正在获取最新价格...`, 'info');
+                    const latestPrice = await fetchMarketPrice(market.token_id);
+                    const displayPrice = latestPrice !== null ? latestPrice : (market.yes_price * 100);
+                    const originalPrice = market.yes_price * 100;
+                    
+                    // 构建确认消息
+                    let confirmMsg = `确认${orderType}买入 "${market.question.substring(0, 50)}..." ?\n\n`;
+                    confirmMsg += `订单类型: ${orderType}订单\n`;
+                    confirmMsg += `当前价格: ${displayPrice.toFixed(1)}¢\n`;
+                    confirmMsg += `金额: $${tradingConfig.order_amount}\n`;
+                    
+                    if (isMarketOrder) {
+                        confirmMsg += `\n⚠️ 市价订单将以当前市场价格立即成交，实际成交价格可能与显示价格不同。`;
+                    } else {
+                        // 限价订单显示价格变化警告
+                        if (latestPrice !== null && Math.abs(latestPrice - originalPrice) > 1) {
+                            const priceDiff = latestPrice - originalPrice;
+                            confirmMsg += `\n⚠️ 价格已变化: ${originalPrice.toFixed(1)}¢ → ${latestPrice.toFixed(1)}¢ (${priceDiff > 0 ? '+' : ''}${priceDiff.toFixed(1)}¢)`;
+                        }
+                    }
+                    
+                    if (!confirm(confirmMsg)) return;
+                    
+                    try {
+                        addLog(`正在提交${orderType}买入订单: ${market.question.substring(0, 30)}...`, 'info');
+                        // 使用最新价格下单（市价订单时价格会被忽略）
+                        const priceToUse = latestPrice !== null ? latestPrice : (market.yes_price * 100);
+                        const url = `${API_BASE}/trade/buy?market_id=${market.id}&token_id=${market.token_id}&price=${priceToUse}&amount=${tradingConfig.order_amount}&market_question=${encodeURIComponent(market.question)}&market_order=${isMarketOrder}`;
+                        const res = await fetch(url, {
+                            method: 'POST'
+                        });
+                        
+                        if (!res.ok) {
+                            const errorText = await res.text();
+                            throw new Error(`HTTP ${res.status}: ${errorText}`);
+                        }
+                        
+                        const data = await res.json();
+                        if (data.success) {
+                            const actualPrice = data.data?.price || priceToUse;
+                            showToast(`${orderType}买入订单已提交`);
+                            addLog(`${orderType}买入成功: ${market.question.substring(0, 30)}... ${isMarketOrder ? '成交价格' : '价格'}: ${actualPrice.toFixed(1)}¢`, 'success');
+                            await fetchPositions();
+                            await fetchStatus();
+                        } else {
+                            const errorMsg = data.message || '未知错误';
+                            showToast(`${orderType}买入失败: ${errorMsg}`, 'error');
+                            addLog(`${orderType}买入失败: ${errorMsg}`, 'error');
+                        }
+                    } catch (e) {
+                        const errorMsg = e.message || String(e);
+                        console.error('买入错误:', e);
+                        showToast(`${orderType}买入失败: ${errorMsg}`, 'error');
+                        addLog(`${orderType}买入失败: ${errorMsg}`, 'error');
                     }
                 };
 
                 const sellPosition = async (marketId) => {
-                    if (!confirm('确认卖出此持仓?')) return;
+                    // 找到对应的持仓
+                    const position = positions.value.find(p => p.market_id === marketId);
+                    if (!position) {
+                        showToast('未找到持仓', 'error');
+                        return;
+                    }
+                    
+                    // 获取最新价格
+                    addLog(`正在获取最新价格...`, 'info');
+                    const latestPrice = await fetchMarketPrice(position.token_id);
+                    const displayPrice = latestPrice !== null ? latestPrice : position.current_price;
+                    const pnl = latestPrice !== null ? 
+                        ((latestPrice - position.avg_price) * position.size / 100) : 
+                        position.unrealized_pnl;
+                    
+                    // 构建确认消息
+                    let confirmMsg = `确认卖出此持仓?\n\n`;
+                    confirmMsg += `市场: ${position.market_question.substring(0, 50)}...\n`;
+                    confirmMsg += `成本价: ${position.avg_price.toFixed(1)}¢\n`;
+                    confirmMsg += `当前价: ${displayPrice.toFixed(1)}¢\n`;
+                    confirmMsg += `预计盈亏: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\n`;
+                    
+                    if (latestPrice !== null && Math.abs(latestPrice - position.current_price) > 1) {
+                        const priceDiff = latestPrice - position.current_price;
+                        confirmMsg += `\n⚠️ 价格已变化: ${position.current_price.toFixed(1)}¢ → ${latestPrice.toFixed(1)}¢ (${priceDiff > 0 ? '+' : ''}${priceDiff.toFixed(1)}¢)`;
+                    }
+                    
+                    if (!confirm(confirmMsg)) return;
+                    
                     try {
                         const res = await fetch(`${API_BASE}/trade/sell/${marketId}`, { method: 'POST' });
                         const data = await res.json();
                         if (data.success) {
                             showToast('卖出订单已提交');
-                            addLog('卖出成功', 'success');
+                            addLog(`卖出成功: ${position.market_question.substring(0, 30)}... 价格: ${displayPrice.toFixed(1)}¢`, 'success');
                             await fetchPositions();
+                            await fetchStatus();
                         } else {
-                            showToast('卖出失败', 'error');
+                            const errorMsg = data.message || '未知错误';
+                            showToast(`卖出失败: ${errorMsg}`, 'error');
+                            addLog(`卖出失败: ${errorMsg}`, 'error');
                         }
                     } catch (e) {
-                        showToast('卖出失败', 'error');
+                        const errorMsg = e.message || String(e);
+                        showToast(`卖出失败: ${errorMsg}`, 'error');
+                        addLog(`卖出失败: ${errorMsg}`, 'error');
                     }
                 };
 
@@ -1184,42 +1343,16 @@
                     const diff = date - now;
                     const hours = Math.floor(diff / (1000 * 60 * 60));
                     const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-                    if (hours < 0) return '已结束';
-                    if (hours < 1) return `${mins}分钟`;
-                    return `${hours}小时${mins}分`;
-                };
-
-                // Sorting
-                const sortMarkets = (field) => {
-                    if (sortBy.value === field) {
-                        // Toggle order if clicking the same field
-                        sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc';
-                    } else {
-                        // Default to descending for price, ascending for time
-                        sortBy.value = field;
-                        sortOrder.value = field === 'price' ? 'desc' : 'asc';
+                    // 如果 endDate 已过，但市场仍在列表中（说明市场仍活跃，仍可投注），显示"已开始"
+                    if (hours < 0) {
+                        const hoursAgo = Math.floor(-diff / (1000 * 60 * 60));
+                        const minsAgo = Math.floor((-diff % (1000 * 60 * 60)) / (1000 * 60));
+                        if (hoursAgo < 1) return `已开始 ${minsAgo}分钟`;
+                        return `已开始 ${hoursAgo}小时${minsAgo > 0 ? minsAgo + '分钟' : ''}`;
                     }
+                    if (hours < 1) return `${mins}分钟后`;
+                    return `${hours}小时${mins}分钟后`;
                 };
-
-                const sortedMarkets = computed(() => {
-                    const marketsCopy = [...markets.value];
-
-                    if (sortBy.value === 'price') {
-                        marketsCopy.sort((a, b) => {
-                            const priceA = a.yes_price * 100;
-                            const priceB = b.yes_price * 100;
-                            return sortOrder.value === 'asc' ? priceA - priceB : priceB - priceA;
-                        });
-                    } else if (sortBy.value === 'time') {
-                        marketsCopy.sort((a, b) => {
-                            const dateA = a.end_date ? new Date(a.end_date).getTime() : 0;
-                            const dateB = b.end_date ? new Date(b.end_date).getTime() : 0;
-                            return sortOrder.value === 'asc' ? dateA - dateB : dateB - dateA;
-                        });
-                    }
-
-                    return marketsCopy;
-                });
 
                 // Lifecycle
                 onMounted(async () => {
@@ -1237,6 +1370,13 @@
                     setInterval(fetchStatus, 10000);
                     setInterval(fetchBalance, 30000);
                     setInterval(fetchPositions, 15000);
+                    
+                    // 自动更新价格（每30秒）
+                    priceUpdateInterval.value = setInterval(() => {
+                        if (markets.value.length > 0) {
+                            updateMarketPrices();
+                        }
+                    }, 30000);
                 });
 
                 return {
@@ -1246,24 +1386,26 @@
                     tradingConfig,
                     telegramConfig,
                     markets,
+                    sortedMarkets,
+                    sortBy,
                     positions,
                     logs,
                     toast,
-                    sortBy,
-                    sortOrder,
-                    sortedMarkets,
                     startTrading,
                     stopTrading,
                     saveTradingConfig,
                     saveTelegramConfig,
                     testTelegram,
                     scanMarkets,
+                    sortMarkets,
                     buyMarket,
                     sellPosition,
                     refreshData,
-                    sortMarkets,
                     getPriceClass,
-                    formatEndDate
+                    formatEndDate,
+                    fetchMarketPrice,
+                    updateMarketPrices,
+                    lastPriceUpdate
                 };
             }
         }).mount('#app');
