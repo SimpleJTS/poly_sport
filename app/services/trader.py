@@ -377,17 +377,28 @@ class TradingService:
             logger.error(f"执行止损失败: {e}")
             await telegram_notifier.notify_error(f"止损失败: {str(e)[:100]}")
     
-    async def manual_buy(self, market_id: str, token_id: str, price: float, 
-                        amount: float, market_question: str = "") -> Optional[Order]:
-        """手动买入"""
+    async def manual_buy(self, market_id: str, token_id: str, price: float,
+                        amount: float, market_question: str = "", market_order: bool = False) -> Optional[Order]:
+        """
+        手动买入
+
+        Args:
+            market_id: 市场ID
+            token_id: Token ID
+            price: 价格（0-100），市价订单时会被忽略
+            amount: 金额（USDC）
+            market_question: 市场问题描述
+            market_order: 是否为市价订单（True=市价，False=限价）
+        """
         cfg = config_manager.trading
-        
+
         try:
             order = await polymarket_client.place_order(
                 token_id=token_id,
                 side=OrderSide.BUY,
                 price=price,
-                amount=amount
+                amount=amount,
+                market_order=market_order
             )
             
             if order:
