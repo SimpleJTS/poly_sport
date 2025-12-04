@@ -134,9 +134,60 @@ class ConfigManager:
                 'chat_id': self.telegram.chat_id
             }
         }
-        
+
         with open(self.config_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def _save_to_env(self, config_updates: dict):
+        """保存配置到 .env 文件（保留注释和格式）"""
+        env_file = Path('.env')
+        lines = []
+        updated_keys = set()
+
+        # 映射更新的配置项到环境变量名
+        key_mapping = {
+            'private_key': 'POLY_PRIVATE_KEY',
+            'funder': 'POLY_FUNDER'
+        }
+
+        # 读取现有 .env 文件
+        if env_file.exists():
+            with open(env_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    stripped = line.strip()
+                    # 如果是注释或空行，保留
+                    if not stripped or stripped.startswith('#'):
+                        lines.append(line.rstrip())
+                        continue
+
+                    # 如果是配置行
+                    if '=' in stripped:
+                        key, value = stripped.split('=', 1)
+                        key = key.strip()
+
+                        # 检查是否需要更新
+                        updated = False
+                        for config_key, env_key in key_mapping.items():
+                            if key == env_key and config_key in config_updates:
+                                lines.append(f"{env_key}={config_updates[config_key]}")
+                                updated_keys.add(env_key)
+                                updated = True
+                                break
+
+                        # 如果不需要更新，保留原值
+                        if not updated:
+                            lines.append(line.rstrip())
+                    else:
+                        lines.append(line.rstrip())
+
+        # 添加新的配置项（如果之前不存在）
+        for config_key, env_key in key_mapping.items():
+            if config_key in config_updates and env_key not in updated_keys:
+                lines.append(f"{env_key}={config_updates[config_key]}")
+
+        # 写回 .env 文件
+        with open(env_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
     
     def update_trading_config(self, **kwargs):
         """更新交易配置"""
@@ -164,8 +215,9 @@ class ConfigManager:
         }
         current.update(kwargs)
         self.polymarket = PolymarketConfig(**current)
-        # Polymarket配置不保存到文件，只保存在环境变量中
-        # 这里只更新内存中的配置
+
+        # 保存到 .env 文件
+        self._save_to_env(kwargs)
 
     def get_trading_config_dict(self) -> dict:
         """获取交易配置字典（用于前端显示）"""
