@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from typing import List, Optional
 
 from app.models import (
-    ApiResponse, TradingConfigUpdate, TelegramConfigUpdate,
+    ApiResponse, TradingConfigUpdate, TelegramConfigUpdate, PolymarketConfigUpdate,
     TradingStatus, Position, Order, MonitoredMarket
 )
 from app.config import config_manager
@@ -98,6 +98,34 @@ async def test_telegram():
     return ApiResponse(
         success=success,
         message="测试消息已发送" if success else "发送失败，请检查配置"
+    )
+
+
+@router.get("/config/polymarket")
+async def get_polymarket_config():
+    """获取Polymarket配置"""
+    return ApiResponse(
+        success=True,
+        data=config_manager.get_polymarket_config_dict()
+    )
+
+
+@router.put("/config/polymarket")
+async def update_polymarket_config(config: PolymarketConfigUpdate):
+    """更新Polymarket配置"""
+    update_data = config.model_dump(exclude_none=True)
+    if update_data:
+        config_manager.update_polymarket_config(**update_data)
+        logger.info("Polymarket配置已更新")
+
+        # 如果 CLOB 客户端已初始化，需要重新初始化
+        if polymarket_client.is_initialized:
+            logger.warning("Polymarket配置已更新，需要重启应用才能生效")
+
+    return ApiResponse(
+        success=True,
+        message="配置已更新（需要重启应用生效）",
+        data=config_manager.get_polymarket_config_dict()
     )
 
 

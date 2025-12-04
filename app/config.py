@@ -155,11 +155,22 @@ class ConfigManager:
         current.update(kwargs)
         self.telegram = TelegramConfig(**current)
         self.save_config()
-    
+
+    def update_polymarket_config(self, **kwargs):
+        """更新Polymarket配置"""
+        current = {
+            'private_key': self.polymarket.private_key,
+            'funder': self.polymarket.funder
+        }
+        current.update(kwargs)
+        self.polymarket = PolymarketConfig(**current)
+        # Polymarket配置不保存到文件，只保存在环境变量中
+        # 这里只更新内存中的配置
+
     def get_trading_config_dict(self) -> dict:
         """获取交易配置字典（用于前端显示）"""
         return self.trading.model_dump()
-    
+
     def get_telegram_config_dict(self) -> dict:
         """获取Telegram配置字典（隐藏敏感信息）"""
         return {
@@ -167,6 +178,15 @@ class ConfigManager:
             'bot_token': self.telegram.bot_token[:10] + "***" if self.telegram.bot_token else "",
             'chat_id': self.telegram.chat_id,
             'configured': bool(self.telegram.bot_token and self.telegram.chat_id)
+        }
+
+    def get_polymarket_config_dict(self) -> dict:
+        """获取Polymarket配置字典（隐藏敏感信息）"""
+        return {
+            'private_key': self.polymarket.private_key[:10] + "***" if self.polymarket.private_key else "",
+            'funder': self.polymarket.funder,
+            'funder_short': self.polymarket.funder[:10] + "..." + self.polymarket.funder[-8:] if self.polymarket.funder else "",
+            'configured': bool(self.polymarket.private_key and self.polymarket.funder)
         }
 
 

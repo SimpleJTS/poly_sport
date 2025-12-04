@@ -781,11 +781,15 @@
             <div class="right-column">
                 <div class="card">
                     <div class="tabs">
-                        <button :class="['tab', activeTab === 'trading' && 'active']" 
+                        <button :class="['tab', activeTab === 'trading' && 'active']"
                                 @click="activeTab = 'trading'">
                             策略配置
                         </button>
-                        <button :class="['tab', activeTab === 'telegram' && 'active']" 
+                        <button :class="['tab', activeTab === 'polymarket' && 'active']"
+                                @click="activeTab = 'polymarket'">
+                            Polymarket
+                        </button>
+                        <button :class="['tab', activeTab === 'telegram' && 'active']"
                                 @click="activeTab = 'telegram'">
                             Telegram
                         </button>
@@ -864,9 +868,64 @@
                             </label>
                         </div>
 
-                        <button class="btn btn-primary" style="width: 100%; margin-top: 16px;" 
+                        <button class="btn btn-primary" style="width: 100%; margin-top: 16px;"
                                 @click="saveTradingConfig">
                             保存配置
+                        </button>
+                    </div>
+
+                    <!-- Polymarket Config -->
+                    <div v-show="activeTab === 'polymarket'" class="card-body">
+                        <div class="form-group" style="background: var(--bg-tertiary); padding: 12px; border-radius: var(--radius); margin-bottom: 16px;">
+                            <div style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 8px;">
+                                ℹ️ 配置状态
+                            </div>
+                            <div v-if="polymarketConfig.configured" style="color: var(--accent-green);">
+                                ✅ 已配置（Private Key 和 Funder 都已设置）
+                            </div>
+                            <div v-else style="color: var(--accent-yellow);">
+                                ⚠️ 未完整配置，下单功能可能无法使用
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Magic 私钥 (Private Key)</label>
+                            <input type="password" class="form-input"
+                                   v-model="polymarketConfig.private_key"
+                                   placeholder="0x...">
+                            <div class="form-hint">
+                                从 <a href="https://reveal.magic.link/polymarket" target="_blank" style="color: var(--accent-blue);">reveal.magic.link/polymarket</a> 获取
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Polymarket Proxy 地址 (Funder) ⚠️ 必需</label>
+                            <input type="text" class="form-input"
+                                   v-model="polymarketConfig.funder"
+                                   placeholder="0x...">
+                            <div class="form-hint">
+                                从 Polymarket 网站设置页面或 PolygonScan 交易记录中获取
+                            </div>
+                            <div v-if="polymarketConfig.funder_short" style="margin-top: 8px; font-size: 0.75rem; color: var(--text-muted);">
+                                当前: {{ polymarketConfig.funder_short }}
+                            </div>
+                        </div>
+
+                        <div style="background: rgba(255, 217, 61, 0.1); border: 1px solid var(--accent-yellow); border-radius: var(--radius); padding: 12px; margin-top: 16px;">
+                            <div style="color: var(--accent-yellow); font-weight: 600; margin-bottom: 8px;">
+                                ⚠️ 重要提示
+                            </div>
+                            <div style="font-size: 0.875rem; color: var(--text-secondary); line-height: 1.6;">
+                                • 对于邮箱登录账户，Funder 参数是必需的<br>
+                                • 修改配置后需要<strong>重启应用</strong>才能生效<br>
+                                • 私钥和 Funder 地址必须匹配，否则签名会失败<br>
+                                • 建议使用环境变量 (.env) 配置，更安全
+                            </div>
+                        </div>
+
+                        <button class="btn btn-primary" style="width: 100%; margin-top: 16px;"
+                                @click="savePolymarketConfig">
+                            保存配置（需重启应用）
                         </button>
                     </div>
 
@@ -958,6 +1017,12 @@
                     bot_token: '',
                     chat_id: ''
                 });
+                const polymarketConfig = reactive({
+                    private_key: '',
+                    funder: '',
+                    funder_short: '',
+                    configured: false
+                });
                 const markets = ref([]);
                 const sortedMarkets = ref([]);
                 const sortBy = ref('time'); // 'time' 或 'price'
@@ -1029,6 +1094,23 @@
                         }
                     } catch (e) {
                         console.error('获取TG配置失败:', e);
+                    }
+                };
+
+                const fetchPolymarketConfig = async () => {
+                    try {
+                        const res = await fetch(`${API_BASE}/config/polymarket`);
+                        const data = await res.json();
+                        if (data.success) {
+                            Object.assign(polymarketConfig, {
+                                private_key: '',
+                                funder: data.data.funder,
+                                funder_short: data.data.funder_short,
+                                configured: data.data.configured
+                            });
+                        }
+                    } catch (e) {
+                        console.error('获取Polymarket配置失败:', e);
                     }
                 };
 
@@ -1134,6 +1216,37 @@
                         if (data.success) {
                             showToast('Telegram配置已保存');
                             addLog('Telegram配置已更新', 'success');
+                        }
+                    } catch (e) {
+                        showToast('保存失败', 'error');
+                    }
+                };
+
+                const savePolymarketConfig = async () => {
+                    try {
+                        const payload = {};
+                        if (polymarketConfig.private_key) {
+                            payload.private_key = polymarketConfig.private_key;
+                        }
+                        if (polymarketConfig.funder) {
+                            payload.funder = polymarketConfig.funder;
+                        }
+
+                        if (Object.keys(payload).length === 0) {
+                            showToast('请至少填写一个配置项', 'error');
+                            return;
+                        }
+
+                        const res = await fetch(`${API_BASE}/config/polymarket`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            showToast('配置已保存，请重启应用生效');
+                            addLog('Polymarket配置已更新（需重启应用）', 'success');
+                            await fetchPolymarketConfig();
                         }
                     } catch (e) {
                         showToast('保存失败', 'error');
@@ -1362,6 +1475,7 @@
                         fetchBalance(),
                         fetchTradingConfig(),
                         fetchTelegramConfig(),
+                        fetchPolymarketConfig(),
                         fetchPositions()
                     ]);
                     addLog('系统就绪', 'success');
@@ -1385,6 +1499,7 @@
                     balance,
                     tradingConfig,
                     telegramConfig,
+                    polymarketConfig,
                     markets,
                     sortedMarkets,
                     sortBy,
@@ -1395,6 +1510,7 @@
                     stopTrading,
                     saveTradingConfig,
                     saveTelegramConfig,
+                    savePolymarketConfig,
                     testTelegram,
                     scanMarkets,
                     sortMarkets,

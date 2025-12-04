@@ -236,3 +236,9 @@ class TelegramConfigUpdate(BaseModel):
     enabled: Optional[bool] = None
     bot_token: Optional[str] = None
     chat_id: Optional[str] = None
+
+
+class PolymarketConfigUpdate(BaseModel):
+    """Polymarket配置更新请求"""
+    private_key: Optional[str] = None
+    funder: Optional[str] = None
